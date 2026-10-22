@@ -2,7 +2,7 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.1.1
+// @version      1.1.2
 // @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口
 // @author       masaobi
 // @match        https://linux.do/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.1.1';
+  const VERSION = '1.1.2';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -744,7 +744,7 @@
     '#ldas-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.36);opacity:0;visibility:hidden;pointer-events:auto;',
     'transition:opacity .22s ease,visibility .22s;}',
     '#ldas-root.is-open #ldas-backdrop{opacity:1;visibility:visible;}',
-    '#ldas-sheet{position:fixed;left:50%;bottom:0;width:min(760px,100%);max-height:85vh;display:flex;flex-direction:column;',
+    '#ldas-sheet{position:fixed;left:50%;bottom:0;width:min(760px,100%);max-height:92vh;display:flex;flex-direction:column;',
     'background:var(--surface);color:var(--on-surface);border-radius:28px 28px 0 0;box-shadow:0 -4px 28px rgba(0,0,0,.28);',
     'transform:translate(-50%,110%);transition:transform .28s cubic-bezier(.2,0,0,1);pointer-events:auto;overflow:hidden;}',
     '#ldas-root.is-open #ldas-sheet{transform:translate(-50%,0);}',
@@ -788,14 +788,14 @@
     '.ldas-warn{display:flex;gap:8px;align-items:flex-start;background:var(--warn-bg);color:var(--warn-fg);border-radius:12px;',
     'padding:10px 12px;margin:0 4px 12px;font-size:12.5px;}',
     '.ldas-warn svg{flex:0 0 auto;margin-top:1px;}',
-    '.ldas-group{margin:0 4px 16px;}',
-    '.ldas-group__head{display:flex;align-items:center;gap:8px;margin:0 2px 8px;}',
+    '.ldas-group{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;margin:0 4px 16px;}',
+    '.ldas-group__head{grid-column:1 / -1;display:flex;align-items:center;gap:8px;margin:0 2px;}',
     '.ldas-chip{display:inline-flex;align-items:center;height:26px;padding:0 10px;border-radius:13px;font-size:12px;font-weight:600;',
     'background:hsl(var(--h,205) 62% 92%);color:hsl(var(--h,205) 55% 26%);}',
     '@media (prefers-color-scheme:dark){.ldas-chip{background:hsl(var(--h,205) 34% 24%);color:hsl(var(--h,205) 68% 80%);}}',
     '.ldas-group__count{font-size:12px;color:var(--variant);}',
     '.ldas-card{display:flex;flex-direction:column;gap:5px;text-decoration:none;color:inherit;background:var(--surface-c);',
-    'border-radius:12px;padding:11px 13px;margin-bottom:8px;border:1px solid transparent;transition:background .15s ease,border-color .15s ease;}',
+    'border-radius:12px;padding:11px 13px;border:1px solid transparent;transition:background .15s ease,border-color .15s ease;}',
     '.ldas-card:hover{background:var(--surface-ch);border-color:var(--outline);}',
     '.ldas-card__top{display:flex;align-items:flex-start;gap:8px;}',
     '.ldas-card__idx{flex:0 0 auto;font-size:11px;font-weight:600;color:var(--variant);background:var(--surface-ch);border-radius:6px;padding:1px 6px;line-height:17px;}',
@@ -804,7 +804,8 @@
     '.ldas-card__meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11.5px;color:var(--variant);}',
     '.ldas-card__meta em{font-style:normal;color:var(--primary);display:inline-flex;align-items:center;gap:3px;}',
     '#ldas-root ::-webkit-scrollbar{width:8px;height:8px;}',
-    '#ldas-root ::-webkit-scrollbar-thumb{background:var(--outline);border-radius:4px;}'
+    '#ldas-root ::-webkit-scrollbar-thumb{background:var(--outline);border-radius:4px;}',
+    '@media (max-width:560px){.ldas-group{grid-template-columns:1fr;}}'
   ].join('');
 
   const state = {
