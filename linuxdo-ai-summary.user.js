@@ -2,7 +2,7 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.1.2
+// @version      1.1.3
 // @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口
 // @author       masaobi
 // @match        https://linux.do/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.1.2';
+  const VERSION = '1.1.3';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -33,6 +33,7 @@
   const CFG_KEY = 'ldas.config.v1';
   const POS_KEY = 'ldas.ball.pos.v1';
   const AUTOOPEN_KEY = 'ldas.autoopen.v1';
+  const SIZE_KEY = 'ldas.panel.size.v1';
 
   // 顶部分类快捷入口:点击跳转对应版块/标签页,落地后自动弹出面板,再点「总结」即为该分类结果
   const QUICK_CATEGORIES = [
@@ -749,6 +750,10 @@
     'transform:translate(-50%,110%);transition:transform .28s cubic-bezier(.2,0,0,1);pointer-events:auto;overflow:hidden;}',
     '#ldas-root.is-open #ldas-sheet{transform:translate(-50%,0);}',
     '#ldas-sheet .ldas-handle{width:32px;height:4px;border-radius:2px;background:var(--outline);margin:10px auto 4px;flex:0 0 auto;}',
+    '#ldas-resizer{position:absolute;left:0;top:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;z-index:2;}',
+    '#ldas-resizer::before{content:"";position:absolute;left:4px;top:4px;width:13px;height:13px;',
+    'background:linear-gradient(135deg,transparent 0 42%,var(--outline) 42% 52%,transparent 52% 64%,var(--outline) 64% 74%,transparent 74%);}',
+    '#ldas-resizer:hover::before{background:linear-gradient(135deg,transparent 0 42%,var(--primary) 42% 52%,transparent 52% 64%,var(--primary) 64% 74%,transparent 74%);}',
     '#ldas-sheet .ldas-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 12px 10px 18px;flex:0 0 auto;}',
     '#ldas-sheet .ldas-head h2{margin:0;font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;}',
     '#ldas-sheet .ldas-head h2 svg{color:var(--primary);}',
@@ -850,6 +855,7 @@
       '<span class="ldas-badge"></span>',
       '</button>',
       '<section id="ldas-sheet" role="dialog" aria-label="帖子 AI 智能总结">',
+      '<div id="ldas-resizer" title="拖动调整面板大小,双击还原"></div>',
       '<div class="ldas-handle"></div>',
       '<div class="ldas-head">',
       '<div><h2>' + svg('spark', 18) + '帖子 AI 智能总结</h2><p id="ldas-sub"></p></div>',
@@ -1412,11 +1418,69 @@
     });
   }
 
+  function clampPanelWidth(width) {
+    return Math.round(Math.min(window.innerWidth - 12, Math.max(380, width)));
+  }
+
+  function clampPanelHeight(height) {
+    return Math.round(Math.min(window.innerHeight * 0.96, Math.max(340, height)));
+  }
+
+  function applySavedPanelSize() {
+    const saved = readKV(SIZE_KEY, null);
+    if (!saved || !Number.isFinite(saved.w) || !Number.isFinite(saved.h)) return;
+    const sheet = el('ldas-sheet');
+    if (!sheet) return;
+    sheet.style.width = clampPanelWidth(saved.w) + 'px';
+    sheet.style.height = clampPanelHeight(saved.h) + 'px';
+  }
+
+  function bindPanelResize() {
+    const grip = el('ldas-resizer');
+    const sheet = el('ldas-sheet');
+    let drag = null;
+    const end = (save) => {
+      if (!drag) return;
+      drag = null;
+      if (!save) return;
+      writeKV(SIZE_KEY, {
+        w: parseFloat(sheet.style.width) || 0,
+        h: parseFloat(sheet.style.height) || 0
+      });
+    };
+    on(grip, 'pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      const rect = sheet.getBoundingClientRect();
+      drag = { x: ev.clientX, y: ev.clientY, w: rect.width, h: rect.height };
+      try {
+        grip.setPointerCapture(ev.pointerId);
+      } catch (err) {
+        /* 不支持捕获时继续用 move 事件 */
+      }
+      ev.preventDefault();
+    });
+    on(grip, 'pointermove', (ev) => {
+      if (!drag) return;
+      // 面板底部固定:向左拖变宽,向上拖变高
+      sheet.style.width = clampPanelWidth(drag.w - (ev.clientX - drag.x)) + 'px';
+      sheet.style.height = clampPanelHeight(drag.h - (ev.clientY - drag.y)) + 'px';
+    });
+    on(grip, 'pointerup', () => end(true));
+    on(grip, 'pointercancel', () => end(false));
+    on(grip, 'dblclick', () => {
+      sheet.style.width = '';
+      sheet.style.height = '';
+      removeKV(SIZE_KEY);
+    });
+  }
+
   function boot() {
     if (el('ldas-root')) return;
     buildPanel();
     bindUI();
     buildCategoryChips();
+    applySavedPanelSize();
+    bindPanelResize();
     watchRoute();
     if (readKV(AUTOOPEN_KEY, null)) {
       removeKV(AUTOOPEN_KEY);
