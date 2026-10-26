@@ -848,6 +848,8 @@
     '.ldas-cat.is-active{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600;}',
     '#ldas-cfg{display:none;flex-direction:column;gap:10px;padding:2px 18px 14px;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;}',
     '#ldas-cfg.is-on{display:flex;}',
+    // 配置展开时结果区让位,配置区独占剩余高度
+    '#ldas-cfg.is-on ~ #ldas-body{display:none;}',
     '#ldas-channels{display:flex;flex-direction:column;gap:12px;}',
     '.ldas-ch{border:1px solid var(--outline);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;}',
     '.ldas-ch__head{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;color:var(--variant);}',
