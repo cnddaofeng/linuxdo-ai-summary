@@ -11,6 +11,7 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_openInTab
 // @connect      *
 // @run-at       document-idle
 // @noframes
@@ -1081,10 +1082,14 @@
     a.href = resolveUrl(entry.item);
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
-    // 后台打开:不切走当前页,用户继续浏览总结列表
+    // 后台打开:GM_openInTab active:false 不抢焦点;无油猴 API 时退回 window.open
     a.addEventListener('click', function (ev) {
       ev.preventDefault();
-      window.open(a.href, '_blank', 'noopener');
+      if (typeof GM_openInTab === 'function') {
+        GM_openInTab(a.href, { active: false, insert: true, setParent: true });
+      } else {
+        window.open(a.href, '_blank', 'noopener');
+      }
     });
     const top = document.createElement('div');
     top.className = 'ldas-card__top';
