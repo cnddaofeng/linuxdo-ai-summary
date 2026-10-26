@@ -2,7 +2,7 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.3.0
+// @version      1.5.0
 // @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.5.0';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -662,24 +662,34 @@
     return String(content);
   }
 
+  // 多通道 failover:按通道顺序尝试,单通道内重试 1 次,失败自动切下一通道
   async function chatJSON(messages, cfg, signal, timeout) {
-    const url = chatUrl(cfg.apiBase);
-    const payload = { model: cfg.model, temperature: 0.3, stream: false, messages };
+    const channels = (Array.isArray(cfg.channels) && cfg.channels.length
+      ? cfg.channels
+      : [{ name: cfg.name || '通道 1', apiBase: cfg.apiBase, apiKey: cfg.apiKey, model: cfg.model }]
+    ).filter((ch) => ch && ch.apiBase && ch.apiKey);
+    if (!channels.length) throw new Error('没有可用的 API 通道,请先在配置里填写');
     const attempts = RETRY_ONCE ? 2 : 1;
     let lastError = null;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      if (signal.aborted) throw new Error('已取消');
-      try {
-        const res = await requestChat(url, cfg.apiKey, payload, signal, timeout || REQUEST_TIMEOUT);
-        if (res.status < 200 || res.status >= 300) {
-          throw new Error('HTTP ' + res.status + ' · ' + cleanText(res.text).slice(0, 180));
+    for (let c = 0; c < channels.length; c += 1) {
+      const ch = channels[c];
+      const url = chatUrl(ch.apiBase);
+      const payload = { model: ch.model || DEFAULT_CONFIG.model, temperature: 0.3, stream: false, messages };
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        if (signal.aborted) throw new Error('已取消');
+        try {
+          const res = await requestChat(url, ch.apiKey, payload, signal, timeout || REQUEST_TIMEOUT);
+          if (res.status < 200 || res.status >= 300) {
+            throw new Error('HTTP ' + res.status + ' · ' + cleanText(res.text).slice(0, 180));
+          }
+          return extractJSON(contentOf(parseHTTPBody(res.text)));
+        } catch (err) {
+          lastError = err;
+          if (/已取消/.test(String(err && err.message))) throw err;
+          if (attempt < attempts) await sleep(600);
         }
-        return extractJSON(contentOf(parseHTTPBody(res.text)));
-      } catch (err) {
-        lastError = err;
-        if (/已取消/.test(String(err && err.message))) break;
-        if (attempt < attempts) await sleep(600);
       }
+      if (c < channels.length - 1) setStatus('通道「' + (ch.name || ch.apiBase) + '」失败,切换下一通道…');
     }
     throw lastError || new Error('请求失败');
   }
@@ -831,16 +841,30 @@
     'background:var(--surface-c);color:var(--variant);font-size:12px;white-space:nowrap;}',
     '.ldas-cat:hover{border-color:var(--primary);color:var(--primary);}',
     '.ldas-cat.is-active{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600;}',
-    '#ldas-cfg{display:none;grid-template-columns:1fr 1fr;gap:10px;padding:2px 18px 14px;flex:0 0 auto;}',
-    '#ldas-cfg.is-on{display:grid;}',
+    '#ldas-cfg{display:none;flex-direction:column;gap:10px;padding:2px 18px 14px;flex:0 0 auto;}',
+    '#ldas-cfg.is-on{display:flex;}',
+    '#ldas-channels{display:flex;flex-direction:column;gap:12px;}',
+    '.ldas-ch{border:1px solid var(--outline);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;}',
+    '.ldas-ch__head{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;color:var(--variant);}',
+    '.ldas-ch__del{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--variant);font-size:16px;}',
+    '.ldas-ch__del:hover{background:#e03131;color:#fff;}',
+    '.ldas-ch .ldas-field{margin:0;}',
+    '#ldas-add-ch{align-self:flex-start;height:32px;padding:0 14px;border-radius:16px;border:1px dashed var(--outline);color:var(--variant);font-size:12.5px;}',
+    '#ldas-add-ch:hover{border-color:var(--primary);color:var(--primary);}',
+    '#ldas-ch-note{margin:0;font-size:11.5px;color:var(--variant);}',
+    '.ldas-cfg-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;}',
+    '.ldas-cfg-actions-row{align-items:center;}',
+    '#ldas-save{height:38px;padding:0 22px;border-radius:19px;background:var(--primary);color:var(--on-primary);font-size:13.5px;font-weight:600;justify-self:start;}',
+    '#ldas-save:hover{filter:brightness(1.08);}',
+    '#ldas-save-status{font-size:12px;color:var(--variant);}',
     '.ldas-field{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:12px;color:var(--variant);}',
-    '.ldas-field.is-wide{grid-column:1 / -1;}',
+    '.ldas-field.is-wide{width:100%;}',
     '.ldas-field input[type=text],.ldas-field input[type=password],.ldas-field input[type=number]{width:100%;padding:10px 12px;border-radius:12px;',
     'border:1px solid var(--outline);background:var(--surface-c);color:var(--on-surface);font-size:13px;outline:none;font-family:inherit;}',
     '.ldas-field input:focus{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-container);}',
     '.ldas-check{flex-direction:row;align-items:center;gap:8px;color:var(--on-surface);font-size:13px;}',
     '.ldas-check input{width:18px;height:18px;accent-color:var(--primary);}',
-    '#ldas-hint{grid-column:1 / -1;margin:0;font-size:11.5px;color:var(--variant);}',
+    '#ldas-hint{margin:0;font-size:11.5px;color:var(--variant);}',
     '#ldas-bar{display:flex;align-items:center;gap:10px;padding:0 18px 10px;flex:0 0 auto;}',
     '#ldas-run{display:flex;align-items:center;gap:8px;padding:0 20px;height:40px;border-radius:20px;background:var(--primary);',
     'color:var(--on-primary);font-size:14px;font-weight:600;white-space:nowrap;}',
@@ -936,12 +960,18 @@
       '</div>',
       '<div id="ldas-cats"></div>',
       '<div id="ldas-cfg">',
-      fieldHtml('cfg-api-base', 'text', 'API 地址', 'https://api.openai.com/v1', false),
-      fieldHtml('cfg-model', 'text', '模型', 'gpt-4o-mini / deepseek-chat', false),
-      fieldHtml('cfg-api-key', 'password', 'API Key', '仅保存在本地', true),
+      '<div id="ldas-channels"></div>',
+      '<button id="ldas-add-ch" type="button">+ 添加备用通道</button>',
+      '<p id="ldas-ch-note">多个通道按顺序自动切换:第一个不可用时立即用下一个,无需手动干预。</p>',
+      '<div class="ldas-cfg-row">',
       fieldHtml('cfg-limit', 'number', '抓取条数', '10 - 500', false),
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-autoload"> 条数不足时自动滚动加载</label>',
+      '</div>',
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-overview"> 生成整体概览(多 1 次请求)</label>',
+      '<div class="ldas-cfg-row ldas-cfg-actions-row">',
+      '<button id="ldas-save" type="button">保存配置</button>',
+      '<span id="ldas-save-status"></span>',
+      '</div>',
       '<p id="ldas-hint">单批最多 40 条 / 9000 字符,失败批次不影响已成功结果。点击卡片在新标签打开原帖。</p>',
       '</div>',
       '<div id="ldas-bar">',
@@ -966,6 +996,17 @@
     cfg.limit = clampInt(cfg.limit, 10, MAX_LIMIT, DEFAULT_CONFIG.limit);
     cfg.autoLoad = !!cfg.autoLoad;
     cfg.includeOverview = !!cfg.includeOverview;
+    // 旧单通道配置迁移为通道列表
+    if (!Array.isArray(cfg.channels)) {
+      cfg.channels = cfg.apiBase && cfg.apiKey
+        ? [{ name: '通道 1', apiBase: cfg.apiBase, apiKey: cfg.apiKey, model: cfg.model || DEFAULT_CONFIG.model }]
+        : [];
+    }
+    // 兼容旧字段:主通道取列表第一个
+    const first = cfg.channels[0] || {};
+    cfg.apiBase = first.apiBase || '';
+    cfg.apiKey = first.apiKey || '';
+    cfg.model = first.model || DEFAULT_CONFIG.model;
     return cfg;
   }
 
@@ -1233,8 +1274,9 @@
     state.open = true;
     const root = el('ldas-root');
     if (root) root.classList.add('is-open');
-    const key = el('cfg-api-key');
-    if (key && !key.value) el('ldas-cfg').classList.add('is-on');
+    // 无可用通道时自动展开配置
+    const hasChannel = collectChannels().some((c) => c.apiBase && c.apiKey);
+    if (!hasChannel) el('ldas-cfg').classList.add('is-on');
   }
 
   function close() {
@@ -1273,31 +1315,113 @@
     badge.classList.toggle('is-on', n > 0);
   }
 
+  // 渲染一个通道卡片(地址/Key/模型 + 删除按钮)
+  function channelCard(ch, index) {
+    const box = document.createElement('div');
+    box.className = 'ldas-ch';
+    const head = document.createElement('div');
+    head.className = 'ldas-ch__head';
+    const label = document.createElement('span');
+    label.textContent = (ch.name || '通道 ' + (index + 1)) + (index === 0 ? '(主通道)' : '');
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'ldas-ch__del';
+    del.title = '删除该通道';
+    del.textContent = '×';
+    del.addEventListener('click', () => {
+      box.remove();
+      refreshChannelLabels();
+    });
+    head.appendChild(label);
+    head.appendChild(del);
+
+    const mkField = (key, type, labelText, placeholder) => {
+      const f = document.createElement('label');
+      f.className = 'ldas-field';
+      const s = document.createElement('span');
+      s.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = type;
+      input.placeholder = placeholder;
+      input.value = ch[key] || '';
+      input.dataset.chField = key;
+      f.appendChild(s);
+      f.appendChild(input);
+      box.appendChild(f);
+    };
+    box.appendChild(head);
+    mkField('name', 'text', '通道名称', '如 官方 API / 中转站');
+    mkField('apiBase', 'text', 'API 地址', 'https://api.openai.com/v1');
+    mkField('apiKey', 'password', 'API Key', '仅保存在本地');
+    mkField('model', 'text', '模型', 'gpt-4o-mini / deepseek-chat');
+    return box;
+  }
+
+  function refreshChannelLabels() {
+    const cards = document.querySelectorAll('#ldas-channels .ldas-ch');
+    cards.forEach((card, i) => {
+      const label = card.querySelector('.ldas-ch__head span');
+      if (label) {
+        const name = (card.querySelector('[data-ch-field=name]') || {}).value || '';
+        label.textContent = (name || '通道 ' + (i + 1)) + (i === 0 ? '(主通道)' : '');
+      }
+    });
+  }
+
+  // 从 UI 收集通道列表
+  function collectChannels() {
+    const cards = document.querySelectorAll('#ldas-channels .ldas-ch');
+    return Array.prototype.map.call(cards, (card) => {
+      const read = (k) => {
+        const input = card.querySelector('[data-ch-field=' + k + ']');
+        return input ? cleanText(input.value) : '';
+      };
+      return { name: read('name'), apiBase: read('apiBase'), apiKey: read('apiKey'), model: read('model') };
+    });
+  }
+
   function bindUI() {
     const cfg = getConfig();
-    el('cfg-api-base').value = cfg.apiBase;
-    el('cfg-api-key').value = cfg.apiKey;
-    el('cfg-model').value = cfg.model;
     el('cfg-limit').value = String(cfg.limit);
     el('cfg-autoload').checked = cfg.autoLoad;
     el('cfg-overview').checked = cfg.includeOverview;
 
-    const collect = () => {
-      const next = {
-        apiBase: cleanText(el('cfg-api-base').value),
-        apiKey: cleanText(el('cfg-api-key').value),
-        model: cleanText(el('cfg-model').value) || DEFAULT_CONFIG.model,
-        limit: clampInt(el('cfg-limit').value, 10, MAX_LIMIT, DEFAULT_CONFIG.limit),
-        autoLoad: el('cfg-autoload').checked,
-        includeOverview: el('cfg-overview').checked
-      };
-      el('cfg-limit').value = String(next.limit);
-      saveConfig(next);
-      return next;
-    };
+    // 通道列表:至少留一张空卡,保证首用户能直接填
+    const wrap = el('ldas-channels');
+    const channels = cfg.channels.length ? cfg.channels : [{ name: '', apiBase: '', apiKey: '', model: '' }];
+    channels.forEach((ch) => wrap.appendChild(channelCard(ch, wrap.children.length)));
+    on(el('ldas-add-ch'), 'click', () => {
+      wrap.appendChild(channelCard({ name: '', apiBase: '', apiKey: '', model: '' }, wrap.children.length));
+    });
+    on(wrap, 'input', refreshChannelLabels);
 
-    ['cfg-api-base', 'cfg-api-key', 'cfg-model', 'cfg-limit', 'cfg-autoload', 'cfg-overview'].forEach((id) => {
-      on(el(id), 'change', collect);
+    // 显式保存:校验通道完整性,写入存储,给出反馈
+    on(el('ldas-save'), 'click', () => {
+      const raw = collectChannels();
+      const filled = raw.filter((c) => c.apiBase && c.apiKey);
+      if (!filled.length) {
+        setStatus('保存失败:至少需要一个填写了地址和 Key 的通道');
+        const note = el('ldas-save-status');
+        if (note) note.textContent = '至少填一个通道的地址和 Key';
+        return;
+      }
+      const incomplete = raw.filter((c) => (c.apiBase || c.apiKey) && !(c.apiBase && c.apiKey));
+      const next = getConfig();
+      next.channels = filled;
+      next.limit = clampInt(el('cfg-limit').value, 10, MAX_LIMIT, DEFAULT_CONFIG.limit);
+      next.autoLoad = el('cfg-autoload').checked;
+      next.includeOverview = el('cfg-overview').checked;
+      next.apiBase = filled[0].apiBase;
+      next.apiKey = filled[0].apiKey;
+      next.model = filled[0].model || DEFAULT_CONFIG.model;
+      saveConfig(next);
+      const note = el('ldas-save-status');
+      if (note) {
+        note.textContent = '已保存 ' + filled.length + ' 个通道' + (incomplete.length ? '(忽略了 ' + incomplete.length + ' 个不完整通道)' : '');
+        setTimeout(() => { note.textContent = ''; }, 2500);
+      }
+      setStatus('配置已保存');
+      el('ldas-cfg').classList.remove('is-on');
     });
     on(el('ldas-cfg-toggle'), 'click', () => el('ldas-cfg').classList.toggle('is-on'));
     on(el('ldas-close'), 'click', close);
@@ -1307,7 +1431,15 @@
       if (state.running) return;
       btn.disabled = true;
       try {
-        collect();
+        // 运行前把 UI 上的通道收进配置(未点保存也能直接跑)
+        const runtimeCfg = getConfig();
+        const filled = collectChannels().filter((c) => c.apiBase && c.apiKey);
+        if (!filled.length) {
+          el('ldas-cfg').classList.add('is-on');
+          throw new Error('请先在配置里填写 API 地址和 Key');
+        }
+        runtimeCfg.channels = filled;
+        saveConfig(runtimeCfg);
         el('ldas-cfg').classList.remove('is-on');
         await summarize();
       } catch (err) {

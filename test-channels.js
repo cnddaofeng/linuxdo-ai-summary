@@ -1,0 +1,72 @@
+// 通道配置 + failover 测试
+const { JSDOM } = require('jsdom');
+const fs = require('fs');
+const src = fs.readFileSync('N:/github-10/linuxdo-ai-summary/linuxdo-ai-summary.user.js', 'utf8');
+const html = '<!DOCTYPE html><html><body><div id="list-area"><table class="topic-list"><tbody>' +
+  '<tr class="topic-list-item" data-topic-id="1"><td class="main-link"><a class="title raw-topic-link" href="/t/t/1">Some Title Here</a></td>' +
+  '<td class="num posts"><span class="number">3</span></td>' +
+  '<td class="num activity"><span class="relative-date" data-time="1704100000000">x</span></td></tr>' +
+  '</tbody></table></div></body></html>';
+const dom = new JSDOM(html, { url: 'https://linux.do/latest', runScripts: 'outside-only', pretendToBeVisual: true });
+const w = dom.window;
+w.__store = {}; w.GM_getValue = (k, d) => (k in w.__store ? w.__store[k] : d); w.GM_setValue = (k, v) => { w.__store[k] = v; }; w.GM_deleteValue = (k) => { delete w.__store[k]; };
+w.GM_xmlhttpRequest = undefined; // 走 fetch 路径,方便 mock
+
+let pass = 0, fail = 0;
+const check = (n, c, e) => { c ? (pass++, console.log('PASS ' + n)) : (fail++, console.log('FAIL ' + n + (e ? ' :: ' + e : ''))); };
+
+// mock fetch:第一通道返回 500,第二通道返回合法响应
+let fetchCalls = [];
+w.fetch = (url, opts) => {
+  const auth = (opts && opts.headers && opts.headers.Authorization) || '';
+  fetchCalls.push({ url, auth });
+  if (auth.indexOf('KEY1') >= 0 && auth.indexOf('KEY2') < 0) return Promise.resolve({ status: 500, text: () => Promise.resolve('boom') });
+  return Promise.resolve({ status: 200, text: () => Promise.resolve(JSON.stringify({
+    choices: [{ message: { content: '{"items":[{"i":1,"tag":"技术","summary":"这是一条测试摘要内容"}]}' } }]
+  })) });
+};
+
+w.eval(src);
+const L = w.__LDAS__;
+
+(async () => {
+  // 1. 通道 UI 渲染
+  const cards = w.document.querySelectorAll('#ldas-channels .ldas-ch');
+  check('通道卡片渲染(空配置 1 张)', cards.length === 1, 'got ' + cards.length);
+
+  // 2. 填两个通道并保存
+  const fill = (cardIdx, name, base, key, model) => {
+    const card = w.document.querySelectorAll("#ldas-channels .ldas-ch")[cardIdx];
+    const set = (k, v) => { card.querySelector('[data-ch-field=' + k + ']').value = v; };
+    set('name', name); set('apiBase', base); set('apiKey', key); set('model', model);
+  };
+  fill(0, '主通道', 'https://one.example/v1', 'Bearer KEY1', 'm1');
+  w.document.getElementById('ldas-add-ch').click();
+  const cards2 = w.document.querySelectorAll('#ldas-channels .ldas-ch');
+  check('添加通道后 2 张卡', cards2.length === 2, 'got ' + cards2.length);
+  fill(1, '备用', 'https://two.example/v1', 'Bearer KEY2', 'm2');
+  // 名称联动
+  check('通道标签含名称', (cards2[0].querySelector('.ldas-ch__head span').textContent || '').indexOf('主通道') >= 0,
+    cards2[0].querySelector('.ldas-ch__head span').textContent);
+  w.document.getElementById('ldas-save').click();
+  const saved = L.getConfig(); console.log("DEBUG channels:", JSON.stringify(saved.channels));
+  check('保存后 channels 有 2 个', Array.isArray(saved.channels) && saved.channels.length === 2, JSON.stringify(saved.channels && saved.channels.length));
+  check('保存后主通道兼容字段', saved.apiBase === 'https://one.example/v1' && saved.apiKey === 'Bearer KEY1');
+
+  // 3. failover:chatJSON 应先打 KEY1(500)再打 KEY2(成功)
+  fetchCalls = [];
+  const out = await L.chatJSON([{ role: 'user', content: 'hi' }], L.getConfig(), new w.AbortController().signal);
+  check('failover 后返回结果', out && out.items && out.items[0].tag === '技术', JSON.stringify(out));
+  check('先请求主通道再切备用', fetchCalls.filter((f) => f.auth.indexOf('KEY1') >= 0).length >= 1 && fetchCalls.some((f) => f.auth.indexOf('KEY2') >= 0),
+    JSON.stringify(fetchCalls.map((f) => f.auth)));
+
+  // 4. 全部通道失败:抛错并提示
+  w.fetch = () => Promise.resolve({ status: 500, text: () => Promise.resolve('all dead') });
+  let threw = false;
+  try { await L.chatJSON([{ role: 'user', content: 'x' }], L.getConfig(), new w.AbortController().signal); }
+  catch (e) { threw = true; }
+  check('全部通道失败时抛错', threw);
+
+  console.log('\n' + pass + ' passed, ' + fail + ' failed');
+  process.exit(fail ? 1 : 0);
+})().catch((e) => { console.error('FATAL', e); process.exit(1); });
