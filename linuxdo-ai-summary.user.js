@@ -2,8 +2,8 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.1.3
-// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口
+// @version      1.3.0
+// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
 // @match        https://*.linux.do/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.1.3';
+  const VERSION = '1.3.0';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -56,6 +56,62 @@
     autoLoad: true,
     includeOverview: true
   };
+
+  // 板块专属策略(客户端确定性过滤,不依赖 AI):
+  //   福利羊毛:排除指定账号,只保留标题/摘要命中关键字的帖子,按发帖时间倒序
+  //   开发调优:聚焦近 7 日帖子,按发帖时间倒序,讨论多(回复≥阈值)的帖子红字突出
+  const WELFARE_PATH = '/c/welfare/36';
+  const DEVELOP_PATH = '/c/develop/4';
+  const WELFARE_KEYWORDS = ['免费', '赠送', '额度', '抽', '分享', '福利', '送', '白嫖', '赠金', '开放', '速登', '深夜', '公益', '放松', '邀请码', '闲置'];
+  const EXCLUDED_AUTHORS = ['富可敌国'];
+  const HOT_REPLY_THRESHOLD = 20;
+
+  function currentBoard() {
+    const p = location.pathname;
+    if (p === WELFARE_PATH || p.indexOf(WELFARE_PATH + '/') === 0) return 'welfare';
+    if (p === DEVELOP_PATH || p.indexOf(DEVELOP_PATH + '/') === 0) return 'develop';
+    return '';
+  }
+
+  function itemTime(it) {
+    return it && it.time && Number.isFinite(it.time.ts) ? it.time.ts : 0;
+  }
+
+  function replyCountOf(it) {
+    const m = String(it && it.stats || '').match(/(\d+)\s*回复/);
+    return m ? Number(m[1]) : 0;
+  }
+
+  // 返回过滤排序后的 items;热点 id 记入 state.hotIds,渲染时红字突出
+  function applyBoardProfile(items) {
+    const board = currentBoard();
+    state.hotIds = new Set();
+    state.boardNote = '';
+    let list = items;
+    if (board === 'welfare') {
+      const before = list.length;
+      list = list.filter((it) => {
+        if (it.author && EXCLUDED_AUTHORS.some((a) => it.author.indexOf(a) >= 0)) return false;
+        const text = it.title + ' ' + (it.excerpt || '');
+        return WELFARE_KEYWORDS.some((k) => text.indexOf(k) >= 0);
+      });
+      list = list.slice().sort((a, b) => itemTime(b) - itemTime(a));
+      state.boardNote = '福利模式 · 关键字 ' + before + '→' + list.length + ' 条 · 按发帖时间倒序';
+    } else if (board === 'develop') {
+      const before = list.length;
+      const week = Date.now() - 7 * 86400000;
+      const inWeek = list.filter((it) => itemTime(it) >= week);
+      if (inWeek.length >= 5) list = inWeek; // 近 7 日几乎没帖子时退回全量,避免空结果
+      list = list.slice().sort((a, b) => itemTime(b) - itemTime(a));
+      state.boardNote = '开发模式 · 近 7 日 ' + list.length + ' 条(共 ' + before + ') · 按发帖时间倒序';
+    }
+    // 热点红字:回复数达到阈值的帖子,两板块通用
+    list.forEach((it) => {
+      if (replyCountOf(it) >= HOT_REPLY_THRESHOLD && it.id) state.hotIds.add(it.id);
+    });
+    if (state.hotIds.size) state.boardNote += (state.boardNote ? ' · ' : '') + '热点 ' + state.hotIds.size + ' 条';
+    return list;
+  }
 
   // 允许 AI 自由分类,但把同义写法收敛到稳定分组,避免多批次结果被"同名异写"拆散
   const TAG_ALIASES = [
@@ -273,8 +329,8 @@
     if (!title) return null;
     const authorEl = row.querySelector('.posters a[data-user-card], .topic-list-data a[data-user-card], a[data-user-card]');
     const timeEl = row.querySelector('.relative-date[data-time], time[data-time]');
-    const posts = textOf(row.querySelector('.posts'));
-    const views = textOf(row.querySelector('.views'));
+    const posts = textOf(row.querySelector('.num.posts, .posts'));
+    const views = textOf(row.querySelector('.num.views, .views'));
     const stats = [posts && posts + ' 回复', views && views + ' 浏览'].filter(Boolean).join(' · ');
     return {
       id: row.getAttribute('data-topic-id') || extractIdFromHref(href),
@@ -283,7 +339,15 @@
       author: authorEl ? authorEl.getAttribute('data-user-card') || textOf(authorEl) : '',
       category: textOf(row.querySelector('.badge-category__name')),
       tags: Array.prototype.map.call(row.querySelectorAll('.discourse-tag'), (t) => cleanText(t.textContent)),
-      time: timeEl ? Number(timeEl.getAttribute('data-time')) || null : null,
+      time: (function () {
+        // 优先取发帖时间列模块收集的 created_at,拿不到再退回列表 DOM 的活动时间
+        const shared = window.__LDAS_CREATED__;
+        if (shared && shared.get && shared.get(row.getAttribute('data-topic-id'))) {
+          const ts = Date.parse(shared.get(row.getAttribute('data-topic-id')));
+          if (isFinite(ts)) return { ts, created: true };
+        }
+        return timeEl ? { ts: Number(timeEl.getAttribute('data-time')) || null, created: false } : { ts: null, created: false };
+      })(),
       stats,
       excerpt: textOf(row.querySelector('.topic-excerpt'))
     };
@@ -745,13 +809,13 @@
     '#ldas-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.36);opacity:0;visibility:hidden;pointer-events:auto;',
     'transition:opacity .22s ease,visibility .22s;}',
     '#ldas-root.is-open #ldas-backdrop{opacity:1;visibility:visible;}',
-    '#ldas-sheet{position:fixed;left:50%;bottom:0;width:min(760px,100%);max-height:92vh;display:flex;flex-direction:column;',
-    'background:var(--surface);color:var(--on-surface);border-radius:28px 28px 0 0;box-shadow:0 -4px 28px rgba(0,0,0,.28);',
-    'transform:translate(-50%,110%);transition:transform .28s cubic-bezier(.2,0,0,1);pointer-events:auto;overflow:hidden;}',
-    '#ldas-root.is-open #ldas-sheet{transform:translate(-50%,0);}',
+    '#ldas-sheet{position:fixed;left:0;bottom:0;width:min(860px,100vw);max-height:92vh;display:flex;flex-direction:column;',
+    'background:var(--surface);color:var(--on-surface);border-radius:0 28px 28px 0;box-shadow:0 -4px 28px rgba(0,0,0,.28);',
+    'transform:translate(-110%,0);transition:transform .28s cubic-bezier(.2,0,0,1);pointer-events:auto;overflow:hidden;}',
+    '#ldas-root.is-open #ldas-sheet{transform:translate(0,0);}',
     '#ldas-sheet .ldas-handle{width:32px;height:4px;border-radius:2px;background:var(--outline);margin:10px auto 4px;flex:0 0 auto;}',
-    '#ldas-resizer{position:absolute;left:0;top:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;z-index:2;}',
-    '#ldas-resizer::before{content:"";position:absolute;left:4px;top:4px;width:13px;height:13px;',
+    '#ldas-resizer{position:absolute;right:0;top:0;width:22px;height:22px;cursor:nesw-resize;touch-action:none;z-index:2;}',
+    '#ldas-resizer::before{content:"";position:absolute;right:4px;top:4px;width:13px;height:13px;',
     'background:linear-gradient(135deg,transparent 0 42%,var(--outline) 42% 52%,transparent 52% 64%,var(--outline) 64% 74%,transparent 74%);}',
     '#ldas-resizer:hover::before{background:linear-gradient(135deg,transparent 0 42%,var(--primary) 42% 52%,transparent 52% 64%,var(--primary) 64% 74%,transparent 74%);}',
     '#ldas-sheet .ldas-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 12px 10px 18px;flex:0 0 auto;}',
@@ -793,7 +857,8 @@
     '.ldas-warn{display:flex;gap:8px;align-items:flex-start;background:var(--warn-bg);color:var(--warn-fg);border-radius:12px;',
     'padding:10px 12px;margin:0 4px 12px;font-size:12.5px;}',
     '.ldas-warn svg{flex:0 0 auto;margin-top:1px;}',
-    '.ldas-group{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;margin:0 4px 16px;}',
+    // 自动换列:面板宽时双列,窄时(被拖小/小屏)自动退回单列,文字不再挤成一团
+    '.ldas-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:8px;align-items:stretch;margin:0 4px 16px;}',
     '.ldas-group__head{grid-column:1 / -1;display:flex;align-items:center;gap:8px;margin:0 2px;}',
     '.ldas-chip{display:inline-flex;align-items:center;height:26px;padding:0 10px;border-radius:13px;font-size:12px;font-weight:600;',
     'background:hsl(var(--h,205) 62% 92%);color:hsl(var(--h,205) 55% 26%);}',
@@ -805,12 +870,15 @@
     '.ldas-card__top{display:flex;align-items:flex-start;gap:8px;}',
     '.ldas-card__idx{flex:0 0 auto;font-size:11px;font-weight:600;color:var(--variant);background:var(--surface-ch);border-radius:6px;padding:1px 6px;line-height:17px;}',
     '.ldas-card__title{font-size:14px;font-weight:600;word-break:break-word;}',
+    // 热点帖:标题红字 + 卡片红边突出(亮暗色模式都用高饱和红)
+    '.ldas-card.is-hot{border-color:#e03131;}',
+    '.ldas-card.is-hot .ldas-card__title{color:#e03131;}',
+    '.ldas-card.is-hot .ldas-card__idx{color:#e03131;background:rgba(224,49,49,.12);}',
     '.ldas-card__summary{font-size:12.5px;color:var(--variant);word-break:break-word;}',
     '.ldas-card__meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11.5px;color:var(--variant);}',
     '.ldas-card__meta em{font-style:normal;color:var(--primary);display:inline-flex;align-items:center;gap:3px;}',
     '#ldas-root ::-webkit-scrollbar{width:8px;height:8px;}',
-    '#ldas-root ::-webkit-scrollbar-thumb{background:var(--outline);border-radius:4px;}',
-    '@media (max-width:560px){.ldas-group{grid-template-columns:1fr;}}'
+    '#ldas-root ::-webkit-scrollbar-thumb{background:var(--outline);border-radius:4px;}'
   ].join('');
 
   const state = {
@@ -823,7 +891,9 @@
     lastItems: null,
     batchCache: new Map(),
     drag: null,
-    scrollTimer: 0
+    scrollTimer: 0,
+    hotIds: new Set(),
+    boardNote: ''
   };
 
   function fieldHtml(id, type, label, placeholder, wide) {
@@ -959,6 +1029,10 @@
   function cardEl(entry) {
     const a = document.createElement('a');
     a.className = 'ldas-card';
+    if (entry.item.id && state.hotIds && state.hotIds.has(entry.item.id)) {
+      a.classList.add('is-hot');
+      a.title = '热点帖:' + replyCountOf(entry.item) + ' 回复';
+    }
     a.href = resolveUrl(entry.item);
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
@@ -985,7 +1059,7 @@
       entry.item.author ? '@' + entry.item.author : '',
       entry.item.category,
       entry.item.tags.length ? entry.item.tags.join(' · ') : '',
-      entry.item.time ? relativeTime(entry.item.time) : '',
+      entry.item.time && entry.item.time.ts ? (entry.item.time.created ? '发帖 ' : '') + relativeTime(entry.item.time.ts) : '',
       entry.item.stats
     ]
       .filter(Boolean)
@@ -1096,7 +1170,11 @@
         items = await harvestMore(cfg.limit, signal, (n) => setStatus('滚动加载中…已抓 ' + n + ' 条'));
       }
       if (!items.length) throw new Error('没有解析到帖子,确认当前页是列表页');
-      const loadNote = items.length < cfg.limit && state.harvestNote ? ' · ' + state.harvestNote : '';
+      items = applyBoardProfile(items);
+      if (!items.length) throw new Error('板块策略过滤后没有帖子(福利模式仅保留命中关键字的帖子)');
+      const loadNote =
+        (state.boardNote ? ' · ' + state.boardNote : '') +
+        (items.length < cfg.limit && state.harvestNote ? ' · ' + state.harvestNote : '');
 
       const batches = planBatches(items);
       let done = 0;
@@ -1461,9 +1539,9 @@
     });
     on(grip, 'pointermove', (ev) => {
       if (!drag) return;
-      // 面板底部固定:向左拖变宽,向上拖变高
-      sheet.style.width = clampPanelWidth(drag.w - (ev.clientX - drag.x)) + 'px';
-      sheet.style.height = clampPanelHeight(drag.h - (ev.clientY - drag.y)) + 'px';
+      // 面板左侧固定:向右拖变宽,向下拖变高
+      sheet.style.width = clampPanelWidth(drag.w + (ev.clientX - drag.x)) + 'px';
+      sheet.style.height = clampPanelHeight(drag.h + (ev.clientY - drag.y)) + 'px';
     });
     on(grip, 'pointerup', () => end(true));
     on(grip, 'pointercancel', () => end(false));
@@ -1511,4 +1589,536 @@
     dispose,
     state
   };
+})();
+
+/* ------------------------------------------------------------------ *
+ * 发帖时间列模块(源自 loongphy linuxdo-topic-created-at,原样并入)
+ * ------------------------------------------------------------------ */
+(function () {
+  'use strict';
+
+  var LS_KEY = 'linuxdo-topic-created-at';
+  var MAX_CACHE = 4000;
+  var COL_CLASS = 'topic-created-at';
+  var COL_LABEL = '发帖';
+  var SORT_FLAG = 'ldSortedByCreated';
+  var THEME_MODES = { '-2': 'horizon', '105': 'classic', '106': 'classic' };
+
+  var createdMap = new Map();
+  // 暴露给 AI 总结主模块:topicId -> created_at(ISO)。Map 是活引用,后续 harvest 追加的数据主模块也能读到
+  window.__LDAS_CREATED__ = createdMap;
+
+  try {
+    var saved = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+    for (var i = 0; i < saved.length; i++) createdMap.set(saved[i][0], saved[i][1]);
+    while (createdMap.size > MAX_CACHE) createdMap.delete(createdMap.keys().next().value);
+  } catch (e) { /* 缓存损坏就当没有 */ }
+
+  var saveTimer = 0;
+  function scheduleSave() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(function () {
+      saveTimer = 0;
+      try { localStorage.setItem(LS_KEY, JSON.stringify(Array.from(createdMap))); } catch (e) { /* ignore */ }
+    }, 2000);
+  }
+
+  function putCreated(id, iso) {
+    var key = String(id);
+    if (createdMap.has(key)) return;
+    createdMap.set(key, iso);
+    while (createdMap.size > MAX_CACHE) createdMap.delete(createdMap.keys().next().value);
+    scheduleSave();
+    scheduleSweep();
+  }
+
+  function harvest(data) {
+    if (!data || typeof data !== 'object') return;
+    var topics = data.topic_list && data.topic_list.topics;
+    if (Array.isArray(topics)) {
+      for (var i = 0; i < topics.length; i++) {
+        var t = topics[i];
+        if (t && t.id != null && t.created_at) putCreated(t.id, t.created_at);
+      }
+      return;
+    }
+    if (Array.isArray(data)) {
+      for (var k = 0; k < data.length; k++) {
+        var msg = data[k];
+        if (Array.isArray(msg) && msg[1] && typeof msg[1] === 'object') harvest(msg[1]);
+      }
+      return;
+    }
+    if (data.id != null && data.created_at && data.slug &&
+        (data.post_stream || Array.isArray(data.posters))) putCreated(data.id, data.created_at);
+  }
+
+  function isApiUrl(url) {
+    return typeof url === 'string' && (/\.json(\?|#|$)/.test(url) || /message-bus\/.+\/poll/.test(url));
+  }
+
+  var origFetch = window.fetch;
+  if (typeof origFetch === 'function') {
+    window.fetch = function (input) {
+      var promise = origFetch.apply(this, arguments);
+      try {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (isApiUrl(url)) {
+          promise.then(function (res) {
+            try { res.clone().json().then(harvest, function () {}); } catch (e) { /* ignore */ }
+          }, function () {});
+        }
+      } catch (e) { /* 拦截绝不影响页面本身 */ }
+      return promise;
+    };
+  }
+
+  var XHR = XMLHttpRequest.prototype;
+  var origOpen = XHR.open;
+  var origSend = XHR.send;
+  XHR.open = function (method, url) {
+    this.__ldApiUrl = isApiUrl(url);
+    return origOpen.apply(this, arguments);
+  };
+  XHR.send = function () {
+    var xhr = this;
+    if (xhr.__ldApiUrl) {
+      xhr.addEventListener('load', function () {
+        try {
+          if (xhr.responseType === 'json') harvest(xhr.response);
+          else if (xhr.responseType === '' || xhr.responseType === 'text') harvest(JSON.parse(xhr.responseText));
+        } catch (e) { /* ignore */ }
+      });
+    }
+    return origSend.apply(this, arguments);
+  };
+
+  function harvestPreloaded() {
+    var el = document.getElementById('data-preloaded');
+    if (!el || !el.dataset.preloaded) return;
+    var data;
+    try { data = JSON.parse(el.dataset.preloaded); } catch (e) { return; }
+    for (var key in data) {
+      if (!/^topic/.test(key)) continue;
+      var v = data[key];
+      if (typeof v === 'string') {
+        try { v = JSON.parse(v); } catch (e) { continue; }
+      }
+      harvest(v);
+    }
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  function fmtShort(d) {
+    var now = new Date();
+    var dayMs = 86400000;
+    var dayOf = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+    var diffDays = Math.round((dayOf(now) - dayOf(d)) / dayMs);
+    if (diffDays <= 0) return pad(d.getHours()) + ':' + pad(d.getMinutes());
+    if (diffDays === 1) return '昨天';
+    if (diffDays === 2) return '前天';
+    if (diffDays < 7) return diffDays + '天前';
+    if (d.getFullYear() === now.getFullYear()) return pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function fmtFull(d) {
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function injectStyle() {
+    var style = document.createElement('style');
+    var INLINE_SEL = '.' + COL_CLASS + '-inline';
+    var inlineCss =
+      INLINE_SEL + '{display:inline-block;font-size:.87rem;line-height:1.2;color:var(--primary-medium,#919191);' +
+      'margin:0 8px;white-space:nowrap;}';
+    var actCss = '.topic-list .topic-item-stats .num.activity{white-space:nowrap;flex-shrink:0;}';
+    var hzCss = '.topic-list .topic-activity__time ' + inlineCss;
+    var hzAlignCss =
+      'html.ldc-horizon table.topic-list tr.topic-list-item td.topic-activity-data' +
+      '{grid-column:activity/-1;text-align:right;white-space:nowrap;overflow:hidden;}' +
+      'html.ldc-horizon .topic-list .topic-activity__time .' + COL_CLASS + '-inline{margin-right:0;color:inherit;}' +
+      'html.ldc-horizon .topic-list .topic-activity__time{display:flex;align-items:center;justify-content:flex-end;column-gap:8px;}';
+    var thCss =
+      'table.topic-list th.' + COL_CLASS + '{cursor:pointer;user-select:none;}' +
+      'table.topic-list th.' + COL_CLASS + ':hover{color:var(--primary,#222);}' +
+      'table.topic-list th.' + COL_CLASS + '[data-' + SORT_FLAG + '="1"]{color:var(--tertiary,#08c);}' +
+      'table.topic-list th.' + COL_CLASS + '[data-' + SORT_FLAG + '="1"]::after{content:" ▾";font-size:.85em;}';
+    style.textContent =
+      'table.topic-list th.' + COL_CLASS + '{text-align:right;white-space:nowrap;}' +
+      'table.topic-list td.' + COL_CLASS + '{text-align:right;white-space:nowrap;font-size:.93em;color:var(--primary-medium,#919191);}' +
+      thCss +
+      INLINE_SEL + '{display:none;}' +
+      INLINE_SEL + ':empty{display:none!important;}' +
+      'html.mobile-view table.topic-list th.' + COL_CLASS + ',html.mobile-view table.topic-list td.' + COL_CLASS + '{display:none!important;}' +
+      'html.mobile-view ' + inlineCss + actCss +
+      hzCss + hzAlignCss +
+      '@media (max-width:580px){' +
+      'table.topic-list th.' + COL_CLASS + ',table.topic-list td.' + COL_CLASS + '{display:none!important;}' +
+      inlineCss + actCss +
+      '}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function replyCount(row) {
+    var el = row.querySelector('.num.posts-map, .posts-map, [data-replies]');
+    if (!el) return 1;
+    var n = parseInt(el.getAttribute('title') || el.textContent, 10);
+    return isFinite(n) ? n : 1;
+  }
+
+  function createdTs(row) {
+    var iso = createdMap.get(row.getAttribute('data-topic-id'));
+    var ts = iso ? Date.parse(iso) : NaN;
+    return isFinite(ts) ? ts : 0;
+  }
+
+  function noReply(row) { return replyCount(row) <= 1; }
+
+  function sortTable(table, headerTh) {
+    var tbody = table.tBodies && table.tBodies[0];
+    if (!tbody) return;
+    var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr.topic-list-item[data-topic-id]'));
+    if (!rows.length) return;
+
+    var sorted = headerTh.dataset[SORT_FLAG] === '1';
+    var i, row;
+
+    if (!sorted) {
+      for (i = 0; i < rows.length; i++) rows[i].dataset.ldOrigIdx = i;
+      rows.sort(function (a, b) {
+        var an = noReply(a), bn = noReply(b);
+        if (an !== bn) return an ? -1 : 1;
+        var d = createdTs(b) - createdTs(a);
+        if (d !== 0) return d;
+        return (parseInt(a.dataset.ldOrigIdx, 10) || 0) - (parseInt(b.dataset.ldOrigIdx, 10) || 0);
+      });
+      for (i = 0; i < rows.length; i++) tbody.appendChild(rows[i]);
+      headerTh.dataset[SORT_FLAG] = '1';
+      headerTh.title = '点击恢复默认顺序';
+    } else {
+      rows.sort(function (a, b) {
+        return (parseInt(a.dataset.ldOrigIdx, 10) || 0) - (parseInt(b.dataset.ldOrigIdx, 10) || 0);
+      });
+      for (i = 0; i < rows.length; i++) tbody.appendChild(rows[i]);
+      delete headerTh.dataset[SORT_FLAG];
+      headerTh.title = '按发帖时间排序（无回复优先）';
+    }
+  }
+
+  function ensureHeader(table) {
+    var headRow = table.tHead && table.tHead.querySelector('tr');
+    if (!headRow) return;
+    var th = headRow.querySelector('th.' + COL_CLASS);
+    if (!th) {
+      th = document.createElement('th');
+      th.className = 'topic-list-data num ' + COL_CLASS;
+      th.setAttribute('scope', 'col');
+      th.textContent = COL_LABEL;
+      th.title = '按发帖时间排序（无回复优先）';
+      headRow.insertBefore(th, headRow.querySelector('th.activity'));
+    }
+    if (!th.__ldSortBound) {
+      th.__ldSortBound = true;
+      th.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        sortTable(table, th);
+      });
+    }
+  }
+
+  function themeMode() {
+    var m = document.querySelector('meta[name="discourse_theme_id"]');
+    if (!m || !m.content) return 'classic';
+    var ids = m.content.split(',');
+    for (var i = 0; i < ids.length; i++) {
+      var mode = THEME_MODES[String(parseInt(ids[i], 10))];
+      if (mode) return mode;
+    }
+    return 'classic';
+  }
+
+  function sweep() {
+    var tables = document.querySelectorAll('table.topic-list');
+    if (!tables.length) return;
+
+    var mode = themeMode();
+    var rootCls = document.documentElement.classList;
+    if (mode === 'horizon') rootCls.add('ldc-horizon');
+    else rootCls.remove('ldc-horizon');
+
+    for (var i = 0; i < tables.length; i++) {
+      var table = tables[i];
+      var horizon = mode === 'horizon' &&
+                    !!table.querySelector('.topic-activity__time, td.topic-activity-data');
+      if (!horizon) ensureHeader(table);
+
+      var rows = table.querySelectorAll('tr.topic-list-item[data-topic-id]');
+      for (var j = 0; j < rows.length; j++) {
+        var row = rows[j];
+        var id = row.getAttribute('data-topic-id');
+
+        var td = null;
+        if (!horizon) {
+          td = row.querySelector('td.' + COL_CLASS);
+          if (!td) {
+            td = document.createElement('td');
+            td.className = 'topic-list-data num ' + COL_CLASS;
+            var anchor = row.querySelector('td.activity');
+            if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(td, anchor);
+            else row.appendChild(td);
+          }
+        }
+
+        var target = row.querySelector('.topic-item-stats .num.activity') ||
+                     row.querySelector('.topic-activity__time');
+
+        var created = createdMap.get(id);
+        if (!created) continue;
+        var ts = Date.parse(created);
+        if (!isFinite(ts)) continue;
+
+        var d = new Date(ts);
+        if (td && td.dataset.filled !== id) {
+          td.textContent = fmtShort(d);
+          td.title = fmtFull(d);
+          td.dataset.filled = id;
+        }
+
+        if (target) {
+          var inline = row.querySelector('.' + COL_CLASS + '-inline');
+          if (!inline) {
+            inline = document.createElement('span');
+            inline.className = COL_CLASS + '-inline';
+            target.insertBefore(inline, target.firstChild);
+          }
+          if (inline.dataset.filled !== id) {
+            inline.textContent = fmtShort(d);
+            inline.title = fmtFull(d);
+            inline.dataset.filled = id;
+          }
+        }
+      }
+    }
+
+    var allRows = document.querySelectorAll('tr.topic-list-item[data-topic-id]');
+    if (allRows.length && refetchedUrl !== location.href) {
+      var missing = 0;
+      for (var k = 0; k < allRows.length; k++) {
+        if (!createdMap.has(allRows[k].getAttribute('data-topic-id'))) missing++;
+      }
+      if (missing * 3 > allRows.length) {
+        refetchedUrl = location.href;
+        var url = (location.pathname.replace(/\/+$/, '') || '/latest') + '.json' + location.search;
+        try {
+          origFetch.call(window, url, { credentials: 'same-origin' }).then(function (res) {
+            try { res.clone().json().then(harvest, function () {}); } catch (e) { /* ignore */ }
+          }, function () {});
+        } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  var sweepScheduled = false;
+  var refetchedUrl = '';
+  function scheduleSweep() {
+    if (sweepScheduled) return;
+    sweepScheduled = true;
+    setTimeout(function () { sweepScheduled = false; sweep(); }, 120);
+  }
+
+  function start() {
+    injectStyle();
+    harvestPreloaded();
+    sweep();
+    new MutationObserver(scheduleSweep).observe(document.body, { childList: true, subtree: true });
+    setInterval(sweep, 1500);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+
+/* ------------------------------------------------------------------ *
+ * Base64 选中解码模块(源自 hotmail/5/base64 扩展,改右键菜单为选区监听)
+ * ------------------------------------------------------------------ */
+(function () {
+  'use strict';
+
+  const HOST_ID = '__base64_decoder_overlay__';
+
+  function decodeBase64(input) {
+    const normalized = String(input)
+      .trim()
+      .replace(/[\t\n\f\r ]/g, '')
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+
+    if (!normalized) throw new Error('没有选中文本。');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+      throw new Error('内容包含非 Base64 字符。');
+    }
+    if (normalized.length % 4 === 1) {
+      throw new Error('Base64 内容长度无效。');
+    }
+
+    const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+    const binary = atob(normalized + padding);
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (e) {
+      throw new Error('解码结果不是有效的 UTF-8 文本。');
+    }
+  }
+
+  function showDecodedResult(selectedText) {
+    document.getElementById(HOST_ID)?.remove();
+
+    const host = document.createElement('div');
+    host.id = HOST_ID;
+    host.style.cssText = 'all:initial;display:block;position:fixed;inset:auto 20px 20px auto;z-index:2147483647;';
+    document.documentElement.appendChild(host);
+
+    const shadow = host.attachShadow({ mode: 'closed' });
+    const style = document.createElement('style');
+    style.textContent = [
+      ':host{all:initial;}',
+      '*{box-sizing:border-box;}',
+      '.panel{width:min(680px,calc(100vw - 40px));max-height:min(640px,calc(100vh - 40px));',
+      'display:flex;flex-direction:column;overflow:hidden;color:#1f2937;background:#fff;',
+      'border:1px solid #dbe3ec;border-radius:12px;box-shadow:0 12px 40px rgba(15,23,42,.22);',
+      'font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;}',
+      '.header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;',
+      'color:#111827;background:#f8fafc;border-bottom:1px solid #e5e7eb;font-weight:600;}',
+      '.actions{display:flex;align-items:center;gap:8px;}',
+      'button{border:0;border-radius:6px;cursor:pointer;font:inherit;}',
+      '.copy{padding:5px 10px;color:#fff;background:#2563eb;}',
+      '.copy:hover{background:#1d4ed8;}',
+      '.close{width:28px;height:28px;color:#64748b;background:transparent;font-size:20px;line-height:1;}',
+      '.close:hover{color:#111827;background:#e2e8f0;}',
+      '.body{padding:14px;overflow:auto;}',
+      '.label{margin:0 0 6px;color:#64748b;font-size:12px;}',
+      'pre{max-height:360px;margin:0 0 12px;padding:10px;overflow:auto;white-space:pre-wrap;',
+      'overflow-wrap:anywhere;color:#111827;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;',
+      'font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}',
+      '.error{color:#b42318;background:#fff5f5;border-color:#fecaca;}',
+      '.status{min-width:52px;color:#64748b;font-size:12px;font-weight:400;}',
+      '@media (prefers-color-scheme:dark){',
+      '.panel{color:#e5e7eb;background:#111827;border-color:#374151;}',
+      '.header{color:#f9fafb;background:#1f2937;border-color:#374151;}',
+      'pre{color:#e5e7eb;background:#0f172a;border-color:#374151;}',
+      '.label,.status,.close{color:#94a3b8;}',
+      '.close:hover{color:#f9fafb;background:#374151;}}'
+    ].join('');
+
+    const panel = document.createElement('section');
+    panel.className = 'panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Base64 解码结果');
+
+    const header = document.createElement('header');
+    header.className = 'header';
+    const title = document.createElement('span');
+    title.textContent = 'Base64 解码结果';
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const status = document.createElement('span');
+    status.className = 'status';
+    const copy = document.createElement('button');
+    copy.className = 'copy';
+    copy.type = 'button';
+    copy.textContent = '复制结果';
+    const close = document.createElement('button');
+    close.className = 'close';
+    close.type = 'button';
+    close.setAttribute('aria-label', '关闭');
+    close.textContent = '×';
+    actions.append(status, copy, close);
+    header.append(title, actions);
+
+    const body = document.createElement('div');
+    body.className = 'body';
+    const label = document.createElement('p');
+    label.className = 'label';
+    label.textContent = '解码内容';
+    const result = document.createElement('pre');
+    body.append(label, result);
+    panel.append(header, body);
+    shadow.append(style, panel);
+
+    let output = '';
+    try {
+      output = decodeBase64(selectedText);
+      result.textContent = output || '（结果为空）';
+    } catch (error) {
+      output = '';
+      result.classList.add('error');
+      result.textContent = error instanceof Error ? error.message : '解码失败。';
+      copy.disabled = true;
+      copy.style.opacity = '0.5';
+      copy.style.cursor = 'not-allowed';
+    }
+
+    close.addEventListener('click', () => host.remove());
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(output);
+      } catch (e) {
+        const textarea = document.createElement('textarea');
+        textarea.value = output;
+        textarea.style.cssText = 'position:fixed;left:-9999px;top:0;';
+        shadow.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        if (!copied) return;
+      }
+      status.textContent = '已复制';
+      window.setTimeout(() => { status.textContent = ''; }, 1500);
+    });
+  }
+
+  // 油猴没有 contextMenus API,改为选区监听:选中疑似 Base64 的文本时自动弹出
+  // 严格启发式:纯小写英文单词(帖子标题/用户名)不会命中;长度按解码后字节数算,URL-safe 也算
+  function looksLikeBase64(text) {
+    const s = String(text).trim().replace(/[\t\n\f\r ]/g, '').replace(/-/g, '+').replace(/_/g, '/');
+    if (s.length < 24 || s.length > 8192) return false;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return false;
+    if (/=/.test(s) && !/={1,2}$/.test(s)) return false; // = 只能在末尾
+    // 高熵特征:必须同时含大小写字母和数字;纯单词(如英文标题)通不过
+    return /[a-z]/.test(s) && /[A-Z]/.test(s) && /[0-9]/.test(s);
+  }
+
+  let lastShown = '';
+  function onSelectionChange() {
+    const sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const text = String(sel.toString() || '').trim();
+    if (text === lastShown) return;
+    if (!looksLikeBase64(text)) return;
+    // 选区在脚本自身 UI(ldas 面板或解码弹层)里时跳过,避免误弹
+    const node = sel.anchorNode;
+    if (node) {
+      const el = node.nodeType === 1 ? node : node.parentElement;
+      if (el && el.closest && el.closest('#ldas-root')) return;
+      const root = node.getRootNode && node.getRootNode();
+      if (root && root.host && root.host.id === HOST_ID) return;
+    }
+    lastShown = text;
+    showDecodedResult(text);
+    // 弹层出现后短暂冷却,避免 mouseup 与选区事件的重复触发
+    setTimeout(() => { lastShown = ''; }, 800);
+  }
+
+  document.addEventListener('mouseup', () => {
+    setTimeout(onSelectionChange, 60);
+  });
+  document.addEventListener('touchend', () => {
+    setTimeout(onSelectionChange, 60);
+  });
 })();
