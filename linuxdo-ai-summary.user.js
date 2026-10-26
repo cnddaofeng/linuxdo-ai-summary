@@ -37,6 +37,7 @@
 
   // 顶部分类快捷入口:点击跳转对应版块/标签页,落地后自动弹出面板,再点「总结」即为该分类结果
   const QUICK_CATEGORIES = [
+    { label: '最新', path: '/latest' },
     { label: '开发调优', path: '/c/develop/4' },
     { label: '福利羊毛', path: '/c/welfare/36' },
     { label: '搞七捻三', path: '/c/gossip/11' },
