@@ -58,11 +58,12 @@
   };
 
   // 板块专属策略(客户端确定性过滤,不依赖 AI):
-  //   福利羊毛:排除指定账号,只保留标题/摘要命中关键字的帖子,按发帖时间倒序
+  //   福利羊毛:排除指定账号,只保留标题/摘要命中关键字的帖子,排除包含黑名单关键字的帖子,按发帖时间倒序
   //   开发调优:聚焦近 7 日帖子,按发帖时间倒序,讨论多(回复≥阈值)的帖子红字突出
   const WELFARE_PATH = '/c/welfare/36';
   const DEVELOP_PATH = '/c/develop/4';
   const WELFARE_KEYWORDS = ['免费', '赠送', '额度', '抽', '分享', '福利', '送', '白嫖', '赠金', '开放', '速登', '深夜', '公益', '放松', '邀请码', '闲置'];
+  const WELFARE_BLACKLIST = ['公益站'];
   const EXCLUDED_AUTHORS = ['富可敌国'];
   const HOT_REPLY_THRESHOLD = 20;
 
@@ -93,6 +94,7 @@
       list = list.filter((it) => {
         if (it.author && EXCLUDED_AUTHORS.some((a) => it.author.indexOf(a) >= 0)) return false;
         const text = it.title + ' ' + (it.excerpt || '');
+        if (WELFARE_BLACKLIST.some((k) => text.indexOf(k) >= 0)) return false;
         return WELFARE_KEYWORDS.some((k) => text.indexOf(k) >= 0);
       });
       list = list.slice().sort((a, b) => itemTime(b) - itemTime(a));
@@ -841,7 +843,7 @@
     'background:var(--surface-c);color:var(--variant);font-size:12px;white-space:nowrap;}',
     '.ldas-cat:hover{border-color:var(--primary);color:var(--primary);}',
     '.ldas-cat.is-active{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600;}',
-    '#ldas-cfg{display:none;flex-direction:column;gap:10px;padding:2px 18px 14px;flex:0 0 auto;}',
+    '#ldas-cfg{display:none;flex-direction:column;gap:10px;padding:2px 18px 14px;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;}',
     '#ldas-cfg.is-on{display:flex;}',
     '#ldas-channels{display:flex;flex-direction:column;gap:12px;}',
     '.ldas-ch{border:1px solid var(--outline);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;}',
@@ -853,7 +855,7 @@
     '#ldas-add-ch:hover{border-color:var(--primary);color:var(--primary);}',
     '#ldas-ch-note{margin:0;font-size:11.5px;color:var(--variant);}',
     '.ldas-cfg-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;}',
-    '.ldas-cfg-actions-row{align-items:center;}',
+    '.ldas-cfg-actions-row{align-items:center;position:sticky;bottom:0;background:var(--surface);padding:8px 0;margin:0 -6px 0 0;}',
     '#ldas-save{height:38px;padding:0 22px;border-radius:19px;background:var(--primary);color:var(--on-primary);font-size:13.5px;font-weight:600;justify-self:start;}',
     '#ldas-save:hover{filter:brightness(1.08);}',
     '#ldas-save-status{font-size:12px;color:var(--variant);}',
@@ -1077,6 +1079,11 @@
     a.href = resolveUrl(entry.item);
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
+    // 后台打开:不切走当前页,用户继续浏览总结列表
+    a.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      window.open(a.href, '_blank', 'noopener');
+    });
     const top = document.createElement('div');
     top.className = 'ldas-card__top';
     const idx = document.createElement('span');
