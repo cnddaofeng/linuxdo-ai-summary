@@ -2,8 +2,8 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.5.0
-// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层
+// @version      1.6.0
+// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
 // @match        https://*.linux.do/*
@@ -23,7 +23,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.5.0';
+  const VERSION = '1.6.0';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -56,17 +56,19 @@
     model: 'gpt-4o-mini',
     limit: 60,
     autoLoad: true,
-    includeOverview: true
+    includeOverview: true,
+    blockKeywords: '',
+    blockUsers: ''
   };
 
   // 板块专属策略(客户端确定性过滤,不依赖 AI):
-  //   福利羊毛:排除指定账号,只保留标题/摘要命中关键字的帖子,排除包含黑名单关键字的帖子,按发帖时间倒序
+  //   福利羊毛:只保留标题/摘要命中关键字的帖子,排除包含黑名单关键字的帖子,按发帖时间倒序
   //   开发调优:聚焦近 7 日帖子,按发帖时间倒序,讨论多(回复≥阈值)的帖子红字突出
+  // 用户自定义屏蔽(所有板块生效,配置面板填写):标题含屏蔽关键字或作者命中屏蔽用户的帖子不进总结
   const WELFARE_PATH = '/c/welfare/36';
   const DEVELOP_PATH = '/c/develop/4';
   const WELFARE_KEYWORDS = ['免费', '赠送', '额度', '抽', '分享', '福利', '送', '白嫖', '赠金', '开放', '速登', '深夜', '公益', '放松', '邀请码', '闲置'];
   const WELFARE_BLACKLIST = ['公益站'];
-  const EXCLUDED_AUTHORS = ['富可敌国'];
   const HOT_REPLY_THRESHOLD = 20;
 
   function currentBoard() {
@@ -85,6 +87,34 @@
     return m ? Number(m[1]) : 0;
   }
 
+  // 屏蔽列表分隔符:中英文逗号/顿号/分号/换行都认,拆完去空去重
+  function splitList(raw) {
+    const seen = new Set();
+    return String(raw == null ? '' : raw)
+      .split(/[,，、;；\n]+/)
+      .map((s) => s.trim())
+      .filter((s) => {
+        if (!s || seen.has(s)) return false;
+        seen.add(s);
+        return true;
+      });
+  }
+
+  // 用户自定义屏蔽(所有板块生效):标题含屏蔽关键字、或作者命中屏蔽用户的帖子,从总结里剔除
+  function applyUserFilters(items, cfg) {
+    const keywords = splitList(cfg && cfg.blockKeywords);
+    const users = splitList(cfg && cfg.blockUsers);
+    state.userFilterNote = '';
+    if (!keywords.length && !users.length) return items;
+    const kept = items.filter((it) => {
+      if (users.length && it.author && users.some((u) => it.author.indexOf(u) >= 0)) return false;
+      if (keywords.length && keywords.some((k) => it.title.indexOf(k) >= 0)) return false;
+      return true;
+    });
+    if (kept.length < items.length) state.userFilterNote = '屏蔽 ' + (items.length - kept.length) + ' 条(自定义规则)';
+    return kept;
+  }
+
   // 返回过滤排序后的 items;热点 id 记入 state.hotIds,渲染时红字突出
   function applyBoardProfile(items) {
     const board = currentBoard();
@@ -94,7 +124,6 @@
     if (board === 'welfare') {
       const before = list.length;
       list = list.filter((it) => {
-        if (it.author && EXCLUDED_AUTHORS.some((a) => it.author.indexOf(a) >= 0)) return false;
         const text = it.title + ' ' + (it.excerpt || '');
         if (WELFARE_BLACKLIST.some((k) => text.indexOf(k) >= 0)) return false;
         return WELFARE_KEYWORDS.some((k) => text.indexOf(k) >= 0);
@@ -924,7 +953,8 @@
     drag: null,
     scrollTimer: 0,
     hotIds: new Set(),
-    boardNote: ''
+    boardNote: '',
+    userFilterNote: ''
   };
 
   function fieldHtml(id, type, label, placeholder, wide) {
@@ -975,11 +1005,15 @@
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-autoload"> 条数不足时自动滚动加载</label>',
       '</div>',
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-overview"> 生成整体概览(多 1 次请求)</label>',
+      '<div class="ldas-cfg-row">',
+      fieldHtml('cfg-block-kw', 'text', '屏蔽标题关键字', '标题含关键字即排除,逗号分隔', false),
+      fieldHtml('cfg-block-users', 'text', '屏蔽用户', '作者命中即排除,逗号分隔', false),
+      '</div>',
       '<div class="ldas-cfg-row ldas-cfg-actions-row">',
       '<button id="ldas-save" type="button">保存配置</button>',
       '<span id="ldas-save-status"></span>',
       '</div>',
-      '<p id="ldas-hint">单批最多 40 条 / 9000 字符,失败批次不影响已成功结果。点击卡片在新标签打开原帖。</p>',
+      '<p id="ldas-hint">单批最多 40 条 / 9000 字符,失败批次不影响已成功结果。屏蔽规则只过滤总结,不改动论坛页面。点击卡片在新标签打开原帖。</p>',
       '</div>',
       '<div id="ldas-bar">',
       '<button id="ldas-run" type="button">' + svg('spark', 17) + '<span>总结</span></button>',
@@ -1227,9 +1261,12 @@
         items = await harvestMore(cfg.limit, signal, (n) => setStatus('滚动加载中…已抓 ' + n + ' 条'));
       }
       if (!items.length) throw new Error('没有解析到帖子,确认当前页是列表页');
+      items = applyUserFilters(items, cfg);
+      if (!items.length) throw new Error('自定义屏蔽规则把帖子全滤掉了,请放宽「屏蔽标题关键字 / 屏蔽用户」');
       items = applyBoardProfile(items);
       if (!items.length) throw new Error('板块策略过滤后没有帖子(福利模式仅保留命中关键字的帖子)');
       const loadNote =
+        (state.userFilterNote ? ' · ' + state.userFilterNote : '') +
         (state.boardNote ? ' · ' + state.boardNote : '') +
         (items.length < cfg.limit && state.harvestNote ? ' · ' + state.harvestNote : '');
 
@@ -1396,11 +1433,29 @@
     });
   }
 
+  // 从 UI 收集完整配置:显式保存与「未点保存直接跑」共用同一入口,两条路径字段不会漂移
+  function collectUIConfig() {
+    const filled = collectChannels().filter((c) => c.apiBase && c.apiKey);
+    const cfg = getConfig();
+    cfg.channels = filled;
+    cfg.apiBase = filled[0] ? filled[0].apiBase : '';
+    cfg.apiKey = filled[0] ? filled[0].apiKey : '';
+    cfg.model = filled[0] && filled[0].model ? filled[0].model : DEFAULT_CONFIG.model;
+    cfg.limit = clampInt(el('cfg-limit').value, 10, MAX_LIMIT, DEFAULT_CONFIG.limit);
+    cfg.autoLoad = el('cfg-autoload').checked;
+    cfg.includeOverview = el('cfg-overview').checked;
+    cfg.blockKeywords = cleanText(el('cfg-block-kw').value);
+    cfg.blockUsers = cleanText(el('cfg-block-users').value);
+    return cfg;
+  }
+
   function bindUI() {
     const cfg = getConfig();
     el('cfg-limit').value = String(cfg.limit);
     el('cfg-autoload').checked = cfg.autoLoad;
     el('cfg-overview').checked = cfg.includeOverview;
+    el('cfg-block-kw').value = cfg.blockKeywords || '';
+    el('cfg-block-users').value = cfg.blockUsers || '';
 
     // 通道列表:至少留一张空卡,保证首用户能直接填
     const wrap = el('ldas-channels');
@@ -1413,27 +1468,18 @@
 
     // 显式保存:校验通道完整性,写入存储,给出反馈
     on(el('ldas-save'), 'click', () => {
-      const raw = collectChannels();
-      const filled = raw.filter((c) => c.apiBase && c.apiKey);
-      if (!filled.length) {
+      const next = collectUIConfig();
+      if (!next.channels.length) {
         setStatus('保存失败:至少需要一个填写了地址和 Key 的通道');
         const note = el('ldas-save-status');
         if (note) note.textContent = '至少填一个通道的地址和 Key';
         return;
       }
-      const incomplete = raw.filter((c) => (c.apiBase || c.apiKey) && !(c.apiBase && c.apiKey));
-      const next = getConfig();
-      next.channels = filled;
-      next.limit = clampInt(el('cfg-limit').value, 10, MAX_LIMIT, DEFAULT_CONFIG.limit);
-      next.autoLoad = el('cfg-autoload').checked;
-      next.includeOverview = el('cfg-overview').checked;
-      next.apiBase = filled[0].apiBase;
-      next.apiKey = filled[0].apiKey;
-      next.model = filled[0].model || DEFAULT_CONFIG.model;
+      const incomplete = collectChannels().filter((c) => (c.apiBase || c.apiKey) && !(c.apiBase && c.apiKey)).length;
       saveConfig(next);
       const note = el('ldas-save-status');
       if (note) {
-        note.textContent = '已保存 ' + filled.length + ' 个通道' + (incomplete.length ? '(忽略了 ' + incomplete.length + ' 个不完整通道)' : '');
+        note.textContent = '已保存 ' + next.channels.length + ' 个通道' + (incomplete ? '(忽略了 ' + incomplete + ' 个不完整通道)' : '');
         setTimeout(() => { note.textContent = ''; }, 2500);
       }
       setStatus('配置已保存');
@@ -1447,14 +1493,12 @@
       if (state.running) return;
       btn.disabled = true;
       try {
-        // 运行前把 UI 上的通道收进配置(未点保存也能直接跑)
-        const runtimeCfg = getConfig();
-        const filled = collectChannels().filter((c) => c.apiBase && c.apiKey);
-        if (!filled.length) {
+        // 运行前把 UI 上的全部配置收进存储(未点保存也能直接跑,屏蔽规则即时生效)
+        const runtimeCfg = collectUIConfig();
+        if (!runtimeCfg.channels.length) {
           el('ldas-cfg').classList.add('is-on');
           throw new Error('请先在配置里填写 API 地址和 Key');
         }
-        runtimeCfg.channels = filled;
         saveConfig(runtimeCfg);
         el('ldas-cfg').classList.remove('is-on');
         await summarize();
@@ -1720,6 +1764,8 @@
   window.__LDAS__ = {
     version: VERSION,
     parseThreads,
+    splitList,
+    applyUserFilters,
     planBatches,
     buildItemMessages,
     buildOverviewMessages,
