@@ -57,6 +57,22 @@ setTimeout(() => {
   check('关键字与用户同时生效', both.length === 3, JSON.stringify(both.map((i) => i.id)));
   const parts = L.splitList('a，b、c; d ,e');
   check('分隔符解析(中英文逗号/顿号/分号)', JSON.stringify(parts) === JSON.stringify(['a', 'b', 'c', 'd', 'e']), JSON.stringify(parts));
+
+  // --- 福利白名单/黑名单自定义 ---
+  const wlfDefault = L.applyBoardProfile(items, L.getConfig());
+  check('默认白名单:命中关键字的必进总结', wlfDefault.length === 4 && !wlfDefault.some((it) => it.id === '3'),
+    JSON.stringify(wlfDefault.map((i) => i.id)));
+  const wlfAll = L.applyBoardProfile(items, { welfareKeywords: '', welfareBlacklist: '' });
+  check('白名单清空 = 福利版块不过滤', wlfAll.length === 5, 'got ' + wlfAll.length);
+  const wlfCustom = L.applyBoardProfile(items, { welfareKeywords: '闲聊,白嫖', welfareBlacklist: '速登' });
+  check('自定义白名单+黑名单生效', wlfCustom.length === 1 && wlfCustom[0].id === '3', JSON.stringify(wlfCustom.map((i) => i.id)));
+
+  // --- 标签归一分组自定义 ---
+  L.state.tagAliasTable = L.buildTagAliasTable({ tagAliases: [{ name: '自定义组', aliases: 'foo,bar' }] });
+  check('自定义标签归一:同义词映射到分组', L.normalizeTag('foo') === '自定义组' && L.normalizeTag('Bar') === '自定义组',
+    L.normalizeTag('foo') + '/' + L.normalizeTag('Bar'));
+  check('自定义表下未命中仍走截断', L.normalizeTag('abcdefghijklmnop') === 'abcdefgh', L.normalizeTag('abcdefghijklmnop'));
+  L.state.tagAliasTable = null;
   dom1.window.close();
 
   // --- 开发调优 ---

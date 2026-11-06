@@ -2,8 +2,8 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.6.3
-// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户
+// @version      1.7.0
+// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户;分类入口/福利关键字/标签分组可自定义
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
 // @match        https://*.linux.do/*
@@ -46,7 +46,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   'use strict';
   if (!LDAS_RUN_OK) return;
 
-  const VERSION = '1.6.3';
+  const VERSION = '1.7.0';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -139,17 +139,21 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   }
 
   // 返回过滤排序后的 items;热点 id 记入 state.hotIds,渲染时红字突出
-  function applyBoardProfile(items) {
+  // cfg 来自配置面板:福利白名单/黑名单可自定义;白名单命中才保留,清空白名单 = 福利版块不过滤
+  function applyBoardProfile(items, cfg) {
     const board = currentBoard();
     state.hotIds = new Set();
     state.boardNote = '';
     let list = items;
     if (board === 'welfare') {
       const before = list.length;
+      const keywords = splitList(cfg && cfg.welfareKeywords);
+      const blacklist = splitList(cfg && cfg.welfareBlacklist);
       list = list.filter((it) => {
         const text = it.title + ' ' + (it.excerpt || '');
-        if (WELFARE_BLACKLIST.some((k) => text.indexOf(k) >= 0)) return false;
-        return WELFARE_KEYWORDS.some((k) => text.indexOf(k) >= 0);
+        if (blacklist.length && blacklist.some((k) => text.indexOf(k) >= 0)) return false;
+        if (!keywords.length) return true;
+        return keywords.some((k) => text.indexOf(k) >= 0);
       });
       list = list.slice().sort((a, b) => itemTime(b) - itemTime(a));
       state.boardNote = '福利模式 · 关键字 ' + before + '→' + list.length + ' 条 · 按发帖时间倒序';
@@ -183,6 +187,20 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   const FALLBACK_TAG = '其他';
   const TAG_PALETTE = [205, 145, 30, 265, 0, 190, 95, 330];
   const TAG_HUE_FALLBACK = 205;
+  // 内置归一表(用户未自定义 tagAliases 时使用);summarize 启动时按配置重建到 state.tagAliasTable
+  const DEFAULT_TAG_TABLE = TAG_ALIASES.map((pair) => ({ name: pair[0], words: pair[1] }));
+
+  function buildTagAliasTable(cfg) {
+    const raw = cfg && Array.isArray(cfg.tagAliases) ? cfg.tagAliases : null;
+    if (!raw) return DEFAULT_TAG_TABLE;
+    const table = [];
+    raw.forEach((g) => {
+      const name = cleanText(g && g.name);
+      const words = splitList(g && g.aliases);
+      if (name && words.length) table.push({ name, words });
+    });
+    return table;
+  }
 
   /* ------------------------------------------------------------------ *
    * 基础设施:存储 / 请求 / 小工具
@@ -776,11 +794,12 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     const raw = cleanText(tag).replace(/[#＃\s]/g, '');
     if (!raw) return FALLBACK_TAG;
     const lower = raw.toLowerCase();
-    for (let i = 0; i < TAG_ALIASES.length; i += 1) {
-      const words = TAG_ALIASES[i][1];
+    const table = state.tagAliasTable || DEFAULT_TAG_TABLE;
+    for (let i = 0; i < table.length; i += 1) {
+      const words = table[i].words;
       for (let j = 0; j < words.length; j += 1) {
         const w = words[j].toLowerCase();
-        if (lower === w || lower.indexOf(w) >= 0) return TAG_ALIASES[i][0];
+        if (lower === w || lower.indexOf(w) >= 0) return table[i].name;
       }
     }
     return raw.length > 8 ? raw.slice(0, 8) : raw;
@@ -929,6 +948,24 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     'color:var(--variant);font-size:13px;line-height:1;flex:0 0 auto;}',
     '.ldas-blk-chip__del:hover{background:#e03131;color:#fff;}',
     '.ldas-blocklists-row{align-items:start;}',
+    '.ldas-adv{border:1px solid var(--outline);border-radius:12px;padding:0 12px 10px;}',
+    '.ldas-adv summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--variant);padding:10px 0;list-style:none;',
+    'display:flex;align-items:center;gap:6px;user-select:none;}',
+    '.ldas-adv summary::-webkit-details-marker{display:none;}',
+    '.ldas-adv summary::before{content:"▸";font-size:11px;color:var(--variant);transition:transform .15s ease;}',
+    '.ldas-adv[open] summary::before{transform:rotate(90deg);}',
+    '.ldas-adv-note{margin:2px 0 0;font-size:11.5px;color:var(--variant);}',
+    '.ldas-editor-col{display:flex;flex-direction:column;gap:6px;margin:12px 0 2px;}',
+    '.ldas-sec-label{font-size:12px;color:var(--variant);}',
+    '.ldas-row-edit{display:flex;gap:6px;align-items:center;}',
+    '.ldas-row-edit input{flex:1;min-width:0;padding:8px 10px;border-radius:10px;',
+    'border:1px solid var(--outline);background:var(--surface-c);color:var(--on-surface);font-size:12.5px;outline:none;font-family:inherit;}',
+    '.ldas-row-edit input:focus{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-container);}',
+    '.ldas-row-del{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;',
+    'color:var(--variant);font-size:16px;flex:0 0 auto;}',
+    '.ldas-row-del:hover{background:#e03131;color:#fff;}',
+    '.ldas-add-row{align-self:flex-start;height:30px;padding:0 12px;border-radius:15px;border:1px dashed var(--outline);color:var(--variant);font-size:12px;}',
+    '.ldas-add-row:hover{border-color:var(--primary);color:var(--primary);}',
     '.ldas-cfg-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;}',
     '.ldas-cfg-actions-row{display:flex;align-items:center;gap:10px;position:sticky;bottom:0;background:var(--surface);padding:8px 0;margin:0 -6px 0 0;}',
     '#ldas-save{height:38px;padding:0 22px;border-radius:19px;background:var(--primary);color:var(--on-primary);font-size:13.5px;font-weight:600;flex:0 0 auto;}',
@@ -996,7 +1033,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     scrollTimer: 0,
     hotIds: new Set(),
     boardNote: '',
-    userFilterNote: ''
+    userFilterNote: '',
+    tagAliasTable: null
   };
 
   function fieldHtml(id, type, label, placeholder, wide) {
@@ -1065,6 +1103,24 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       blocklistHtml('blk-kw', '屏蔽标题关键字', '输入关键字,回车或点添加'),
       blocklistHtml('blk-users', '屏蔽用户', '输入用户名,回车或点添加'),
       '</div>',
+      '<details class="ldas-adv">',
+      '<summary>板块与分类规则(福利关键字 / 分类入口 / 标签分组)</summary>',
+      '<div class="ldas-cfg-row ldas-blocklists-row">',
+      blocklistHtml('wlf-kw', '福利白名单(命中必总结)', '输入关键字,回车或点添加'),
+      blocklistHtml('wlf-bl', '福利黑名单(命中不总结)', '输入关键字,回车或点添加'),
+      '</div>',
+      '<p class="ldas-adv-note">白名单/黑名单仅在福利羊毛版块生效:命中白名单的帖子必进总结,未命中的跳过;黑名单命中的排除;白名单清空则该版块不过滤、全部总结。</p>',
+      '<div class="ldas-editor-col">',
+      '<span class="ldas-sec-label">分类快捷入口(名称 + 版块路径,保存后顶部入口即时重建)</span>',
+      '<div id="ldas-cats-edit"></div>',
+      '<button id="ldas-add-cat" type="button" class="ldas-add-row">+ 添加分类</button>',
+      '</div>',
+      '<div class="ldas-editor-col">',
+      '<span class="ldas-sec-label">标签归一分组(分组名 + 同义词,逗号分隔;AI 的同义写法归到同一分组)</span>',
+      '<div id="ldas-tags-edit"></div>',
+      '<button id="ldas-add-tag" type="button" class="ldas-add-row">+ 添加分组</button>',
+      '</div>',
+      '</details>',
       '<div class="ldas-cfg-row ldas-cfg-actions-row">',
       '<button id="ldas-save" type="button">保存配置</button>',
       '<span class="ldas-save-reminder">屏蔽项增删后点「保存配置」生效</span>',
@@ -1105,6 +1161,9 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     cfg.apiBase = first.apiBase || '';
     cfg.apiKey = first.apiKey || '';
     cfg.model = first.model || DEFAULT_CONFIG.model;
+    // 旧配置补默认:福利白名单/黑名单关键字(未存过则等于内置表)
+    if (typeof cfg.welfareKeywords !== 'string') cfg.welfareKeywords = WELFARE_KEYWORDS.join(',');
+    if (typeof cfg.welfareBlacklist !== 'string') cfg.welfareBlacklist = WELFARE_BLACKLIST.join(',');
     return cfg;
   }
 
@@ -1131,7 +1190,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   }
 
   function tagHue(tag) {
-    const known = TAG_ALIASES.map((t) => t[0]);
+    const known = (state.tagAliasTable || DEFAULT_TAG_TABLE).map((t) => t.name);
     const idx = known.indexOf(tag);
     if (idx >= 0) return TAG_PALETTE[idx % TAG_PALETTE.length];
     if (tag === FALLBACK_TAG) return TAG_HUE_FALLBACK;
@@ -1320,7 +1379,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       if (!items.length) throw new Error('没有解析到帖子,确认当前页是列表页');
       items = applyUserFilters(items, cfg);
       if (!items.length) throw new Error('自定义屏蔽规则把帖子全滤掉了,请放宽「屏蔽标题关键字 / 屏蔽用户」');
-      items = applyBoardProfile(items);
+      state.tagAliasTable = buildTagAliasTable(cfg);
+      items = applyBoardProfile(items, cfg);
       if (!items.length) throw new Error('板块策略过滤后没有帖子(福利模式仅保留命中关键字的帖子)');
       const loadNote =
         (state.userFilterNote ? ' · ' + state.userFilterNote : '') +
@@ -1542,6 +1602,91 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     });
   }
 
+  // 分类快捷入口与标签归一的行编辑器(双输入 + 删除),收集时空行自动忽略
+  function categoryRow(cat) {
+    const row = document.createElement('div');
+    row.className = 'ldas-row-edit';
+    const mk = (key, placeholder) => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = placeholder;
+      input.value = cat[key] || '';
+      input.dataset.catField = key;
+      row.appendChild(input);
+    };
+    mk('label', '名称,如 开发调优');
+    mk('path', '路径,如 /c/develop/4');
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'ldas-row-del';
+    del.title = '删除该分类';
+    del.textContent = '×';
+    del.addEventListener('click', () => row.remove());
+    row.appendChild(del);
+    return row;
+  }
+
+  function collectCategories() {
+    return Array.prototype.map
+      .call(document.querySelectorAll('#ldas-cats-edit .ldas-row-edit'), (row) => {
+        const read = (k) => {
+          const input = row.querySelector('[data-cat-field=' + k + ']');
+          return input ? cleanText(input.value) : '';
+        };
+        return { label: read('label'), path: read('path') };
+      })
+      .filter((c) => c.label && c.path)
+      .map((c) => ({ label: c.label, path: c.path.charAt(0) === '/' ? c.path : '/' + c.path }));
+  }
+
+  function tagAliasRow(group) {
+    const row = document.createElement('div');
+    row.className = 'ldas-row-edit';
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.placeholder = '分组名,如 技术';
+    name.value = group.name || '';
+    name.dataset.tagField = 'name';
+    const aliases = document.createElement('input');
+    aliases.type = 'text';
+    aliases.placeholder = '同义词,逗号分隔,如 开发,编程,dev';
+    aliases.value = group.aliases || '';
+    aliases.dataset.tagField = 'aliases';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'ldas-row-del';
+    del.title = '删除该分组';
+    del.textContent = '×';
+    del.addEventListener('click', () => row.remove());
+    row.appendChild(name);
+    row.appendChild(aliases);
+    row.appendChild(del);
+    return row;
+  }
+
+  function collectTagAliases() {
+    return Array.prototype.map
+      .call(document.querySelectorAll('#ldas-tags-edit .ldas-row-edit'), (row) => {
+        const read = (k) => {
+          const input = row.querySelector('[data-tag-field=' + k + ']');
+          return input ? cleanText(input.value) : '';
+        };
+        return { name: read('name'), aliases: splitList(read('aliases')).join(',') };
+      })
+      .filter((g) => g.name && g.aliases);
+  }
+
+  // 未自定义时回落到内置表
+  function effectiveCategories(cfg) {
+    return cfg && Array.isArray(cfg.categories) ? cfg.categories : QUICK_CATEGORIES;
+  }
+
+  function effectiveTagAliases(cfg) {
+    return cfg && Array.isArray(cfg.tagAliases)
+      ? cfg.tagAliases
+      : TAG_ALIASES.map((pair) => ({ name: pair[0], aliases: pair[1].join(',') }));
+  }
+
   // 从 UI 收集完整配置:显式保存与「未点保存直接跑」共用同一入口,两条路径字段不会漂移
   function collectUIConfig() {
     const filled = collectChannels().filter((c) => c.apiBase && c.apiKey);
@@ -1555,6 +1700,10 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     cfg.includeOverview = el('cfg-overview').checked;
     cfg.blockKeywords = blocklistValues(el('blk-kw')).join(',');
     cfg.blockUsers = blocklistValues(el('blk-users')).join(',');
+    cfg.welfareKeywords = blocklistValues(el('wlf-kw')).join(',');
+    cfg.welfareBlacklist = blocklistValues(el('wlf-bl')).join(',');
+    cfg.categories = collectCategories();
+    cfg.tagAliases = collectTagAliases();
     return cfg;
   }
 
@@ -1565,6 +1714,14 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     el('cfg-overview').checked = cfg.includeOverview;
     bindBlocklist('blk-kw', cfg.blockKeywords);
     bindBlocklist('blk-users', cfg.blockUsers);
+    bindBlocklist('wlf-kw', cfg.welfareKeywords);
+    bindBlocklist('wlf-bl', cfg.welfareBlacklist);
+    const catsEdit = el('ldas-cats-edit');
+    effectiveCategories(cfg).forEach((cat) => catsEdit.appendChild(categoryRow(cat)));
+    on(el('ldas-add-cat'), 'click', () => catsEdit.appendChild(categoryRow({ label: '', path: '' })));
+    const tagsEdit = el('ldas-tags-edit');
+    effectiveTagAliases(cfg).forEach((g) => tagsEdit.appendChild(tagAliasRow(g)));
+    on(el('ldas-add-tag'), 'click', () => tagsEdit.appendChild(tagAliasRow({ name: '', aliases: '' })));
 
     // 通道列表:至少留一张空卡,保证首用户能直接填
     const wrap = el('ldas-channels');
@@ -1592,6 +1749,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
         setTimeout(() => { note.textContent = ''; }, 2500);
       }
       setStatus('配置已保存');
+      buildCategoryChips();
+      updateChipActive();
       el('ldas-cfg').classList.remove('is-on');
     });
     on(el('ldas-cfg-toggle'), 'click', () => el('ldas-cfg').classList.toggle('is-on'));
@@ -1652,7 +1811,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   function buildCategoryChips() {
     const wrap = el('ldas-cats');
     if (!wrap) return;
-    QUICK_CATEGORIES.forEach((cat) => {
+    wrap.textContent = '';
+    effectiveCategories(getConfig()).forEach((cat) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'ldas-cat';
@@ -1708,8 +1868,9 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
 
   function updateChipActive() {
     const chips = document.querySelectorAll('#ldas-cats .ldas-cat');
+    const cats = effectiveCategories(getConfig());
     Array.prototype.forEach.call(chips, (btn, i) => {
-      const cat = QUICK_CATEGORIES[i];
+      const cat = cats[i];
       if (!cat) return;
       const active = location.pathname === cat.path || location.pathname.indexOf(cat.path + '/') === 0;
       btn.classList.toggle('is-active', active);
@@ -1875,6 +2036,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     parseThreads,
     splitList,
     applyUserFilters,
+    applyBoardProfile,
+    buildTagAliasTable,
     planBatches,
     buildItemMessages,
     buildOverviewMessages,

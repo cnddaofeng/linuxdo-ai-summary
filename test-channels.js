@@ -92,6 +92,31 @@ const L = w.__LDAS__;
   check('保存后 blockKeywords 持久化', savedCfg.blockKeywords === '抽奖,转发,夜话', JSON.stringify(savedCfg.blockKeywords));
   check('保存后 blockUsers 持久化', savedCfg.blockUsers === 'someone', JSON.stringify(savedCfg.blockUsers));
 
+  // 6. 板块与分类规则编辑器(福利关键字 / 分类入口 / 标签分组)
+  const catRows = w.document.querySelectorAll('#ldas-cats-edit .ldas-row-edit');
+  check('分类入口默认渲染 10 行', catRows.length === 10, 'got ' + catRows.length);
+  w.document.getElementById('ldas-add-cat').click();
+  const newCat = w.document.querySelectorAll('#ldas-cats-edit .ldas-row-edit')[10];
+  newCat.querySelector('[data-cat-field=label]').value = '测试分类';
+  newCat.querySelector('[data-cat-field=path]').value = '/c/test/99';
+  w.document.getElementById('ldas-add-cat').click(); // 再加一行留空的,保存时应被忽略
+  const tagRows = w.document.querySelectorAll('#ldas-tags-edit .ldas-row-edit');
+  check('标签分组默认渲染 8 行', tagRows.length === 8, 'got ' + tagRows.length);
+  check('福利白名单 chips 按默认值渲染', w.document.querySelectorAll('#ldas-cats-edit').length === 1 &&
+    w.document.getElementById('wlf-kw').querySelectorAll('.ldas-blk-chip').length >= 10,
+    String(w.document.getElementById('wlf-kw').querySelectorAll('.ldas-blk-chip').length));
+  w.document.getElementById('ldas-save').click();
+  const cfg2 = L.getConfig();
+  check('保存后分类入口持久化(空行被忽略)', Array.isArray(cfg2.categories) && cfg2.categories.length === 11 &&
+    cfg2.categories[10].label === '测试分类' && cfg2.categories[10].path === '/c/test/99',
+    JSON.stringify(cfg2.categories && cfg2.categories.length));
+  check('保存后福利关键字持久化', typeof cfg2.welfareKeywords === 'string' && cfg2.welfareKeywords.indexOf('白嫖') >= 0,
+    JSON.stringify(cfg2.welfareKeywords));
+  check('保存后标签分组持久化', Array.isArray(cfg2.tagAliases) && cfg2.tagAliases.length === 8 &&
+    cfg2.tagAliases[0].name === '技术', JSON.stringify(cfg2.tagAliases && cfg2.tagAliases[0]));
+  check('保存后顶部快捷入口即时重建', w.document.querySelectorAll('#ldas-cats .ldas-cat').length === 11,
+    'got ' + w.document.querySelectorAll('#ldas-cats .ldas-cat').length);
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('FATAL', e); process.exit(1); });
