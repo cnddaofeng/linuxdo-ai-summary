@@ -5,7 +5,7 @@
 ## 安装
 
 1. 浏览器安装 Tampermonkey / Violentmonkey。
-2. 新建脚本,粘贴 `linuxdo-ai-summary.user.js` 全部内容并保存。
+2. 新建脚本,粘贴发布版 `linuxdo-ai-summary.release.user.js` 全部内容并保存(无注释,功能与源码版完全一致);需要读源码时用 `linuxdo-ai-summary.user.js`。
 3. 打开 `https://linux.do/latest`,右下角出现悬浮球(带当前列表帖子数徽标)。
 
 脚本带域名硬限制:仅 `linux.do` 及其子域可用。即使把 `@match`/`@include` 改成其他论坛,三个模块也会在运行时自检域名后直接退出,不注入 UI、不挂钩网络请求。
@@ -54,4 +54,6 @@
 ## 开发
 
 - `node --check linuxdo-ai-summary.user.js` 做语法检查。
+- `node build.js` 从源码生成无注释发布版 `linuxdo-ai-summary.release.user.js`(保留 `==UserScript==` 头,剥离其余全部注释);源码改动后需重新构建。
+- `node test-board.js` / `test-channels.js` / `test-integration.js` / `test-domain.js` / `test-release.js` 跑本地测试(需 `npm i --no-save jsdom`)。
 - `_probe.js` / `_probe2.js` / `_test.js` / `_test2.js` / `_layout.js` / `_smoke.js` 是在真实页面注入后的探针与端到端用例(`agent-browser-cli exec --tab <id> --file <path>`),验证通过后可以删除。
