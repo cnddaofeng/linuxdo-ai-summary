@@ -2,7 +2,7 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.6.2
+// @version      1.6.3
 // @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
@@ -23,11 +23,30 @@ const LDAS_HOST_OK = /^(.+\.)?linux\.do$/.test(
   String(location.hostname || '').toLowerCase().replace(/\.+$/, '')
 );
 
+// 署名铅封:作者指纹加密存放(异或密钥 + FNV 指纹校验,明文不出现在代码里)。
+// 铅封数据 / 密钥 / 指纹任何一环被删除或改动,解码指纹即对不上,脚本在所有站点整体停摆——拆除署名等于报废。
+const LDAS_SIG_DATA = [0, 13, 15, 6, 85, 93, 1, 14, 66, 39288, 39256];
+const LDAS_SIG_KEY = 'ldas-seal-v1';
+const LDAS_SIG_HASH = 'a6ecf791';
+function ldasSigText() {
+  let out = '';
+  for (let i = 0; i < LDAS_SIG_DATA.length; i += 1) {
+    out += String.fromCharCode(LDAS_SIG_DATA[i] ^ LDAS_SIG_KEY.charCodeAt(i % LDAS_SIG_KEY.length));
+  }
+  return out;
+}
+function ldasFnv1a(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
+  return h.toString(16);
+}
+const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
+
 (function () {
   'use strict';
-  if (!LDAS_HOST_OK) return;
+  if (!LDAS_RUN_OK) return;
 
-  const VERSION = '1.6.2';
+  const VERSION = '1.6.3';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -1880,7 +1899,7 @@ const LDAS_HOST_OK = /^(.+\.)?linux\.do$/.test(
  * ------------------------------------------------------------------ */
 (function () {
   'use strict';
-  if (!LDAS_HOST_OK) return;
+  if (!LDAS_RUN_OK) return;
 
   var LS_KEY = 'linuxdo-topic-created-at';
   var MAX_CACHE = 4000;
@@ -2232,7 +2251,7 @@ const LDAS_HOST_OK = /^(.+\.)?linux\.do$/.test(
  * ------------------------------------------------------------------ */
 (function () {
   'use strict';
-  if (!LDAS_HOST_OK) return;
+  if (!LDAS_RUN_OK) return;
 
   const HOST_ID = '__base64_decoder_overlay__';
 

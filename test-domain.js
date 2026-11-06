@@ -6,14 +6,14 @@ const src = fs.readFileSync('N:/github-10/linuxdo-ai-summary/linuxdo-ai-summary.
 let pass = 0, fail = 0;
 const check = (n, c, e) => { c ? (pass++, console.log('PASS ' + n)) : (fail++, console.log('FAIL ' + n + (e ? ' :: ' + e : ''))); };
 
-function evalAt(url) {
+function evalAt(url, source) {
   const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', { url, runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
   w.GM_getValue = () => null; w.GM_setValue = () => {}; w.GM_deleteValue = () => {};
   w.GM_xmlhttpRequest = () => ({ abort() {} });
   const sentinel = () => new Promise(() => {});
   w.fetch = sentinel;
-  w.eval(src);
+  w.eval(source || src);
   return { dom, w, sentinel };
 }
 
@@ -52,6 +52,22 @@ function evalAt(url) {
   const { w, dom, sentinel } = evalAt('https://example.com/latest');
   check('example.com 主模块不启动', w.__LDAS__ === undefined);
   check('example.com 时间列模块不启动(fetch 未被包装)', w.fetch === sentinel);
+  dom.window.close();
+}
+
+// 6. 署名铅封:删除加密数据 → 即使在 linux.do 上也整体停摆
+{
+  const tampered = src.replace(/const LDAS_SIG_DATA = \[[\s\S]*?\];/, 'const LDAS_SIG_DATA = [];');
+  const { w, dom } = evalAt('https://linux.do/latest', tampered);
+  check('删除铅封数据 → linux.do 也不启动', w.__LDAS__ === undefined && !w.document.getElementById('ldas-root'));
+  dom.window.close();
+}
+
+// 7. 署名铅封:篡改指纹校验 → 停摆
+{
+  const tampered = src.replace(/const LDAS_SIG_HASH = '[^']*';/, "const LDAS_SIG_HASH = 'deadbeef';");
+  const { w, dom } = evalAt('https://linux.do/latest', tampered);
+  check('篡改指纹校验 → linux.do 也不启动', w.__LDAS__ === undefined);
   dom.window.close();
 }
 
