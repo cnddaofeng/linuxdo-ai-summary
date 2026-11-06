@@ -2,7 +2,7 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.6.1
+// @version      1.6.2
 // @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
@@ -17,13 +17,17 @@
 // @noframes
 // ==/UserScript==
 
-// 其他 Discourse 站点:自行追加 @match(例如 https://meta.discourse.org/*)
-// Discuz 站点(如 bbs.binmt.cc/*)也能跑,解析器会自动切到 discuz profile
+// 域名硬限制:仅 linux.do 及其子域可用。就算把 @match/@include 改成其他论坛,
+// 三个模块(UI / 发帖时间列的网络钩子 / Base64 解码)也会在运行时自检域名并直接退出,不产生任何副作用。
+const LDAS_HOST_OK = /^(.+\.)?linux\.do$/.test(
+  String(location.hostname || '').toLowerCase().replace(/\.+$/, '')
+);
 
 (function () {
   'use strict';
+  if (!LDAS_HOST_OK) return;
 
-  const VERSION = '1.6.1';
+  const VERSION = '1.6.2';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -1876,6 +1880,7 @@
  * ------------------------------------------------------------------ */
 (function () {
   'use strict';
+  if (!LDAS_HOST_OK) return;
 
   var LS_KEY = 'linuxdo-topic-created-at';
   var MAX_CACHE = 4000;
@@ -2227,6 +2232,7 @@
  * ------------------------------------------------------------------ */
 (function () {
   'use strict';
+  if (!LDAS_HOST_OK) return;
 
   const HOST_ID = '__base64_decoder_overlay__';
 
