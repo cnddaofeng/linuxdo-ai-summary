@@ -2,8 +2,8 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.7.0
-// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户;分类入口/福利关键字/标签分组可自定义
+// @version      1.8.0
+// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户;分类入口/福利关键字/标签分组可自定义;打开面板自动出结果,按兴趣生成「为你推荐」
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
 // @match        https://*.linux.do/*
@@ -46,7 +46,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   'use strict';
   if (!LDAS_RUN_OK) return;
 
-  const VERSION = '1.7.0';
+  const VERSION = '1.8.0';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -80,6 +80,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     limit: 60,
     autoLoad: true,
     includeOverview: true,
+    openAutoRun: true,
+    interestOn: true,
     blockKeywords: '',
     blockUsers: ''
   };
@@ -136,6 +138,102 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     });
     if (kept.length < items.length) state.userFilterNote = '屏蔽 ' + (items.length - kept.length) + ' 条(自定义规则)';
     return kept;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 用户兴趣画像:点击卡片即记录(标题分词/分类/标签/已读),仅存本地,
+   * 用于「为你推荐」置顶组;结果缓存用于「打开面板即出内容」
+   * ------------------------------------------------------------------ */
+  const INTEREST_KEY = 'ldas.interest.v1';
+  const RESULT_KEY = 'ldas.result.cache.v1';
+  const CACHE_FRESH_MS = 30 * 60 * 1000;
+  const INTEREST_MAX_TERMS = 2000;
+  const INTEREST_MAX_CLICKS = 500;
+  const REC_TAG = '为你推荐';
+  const REC_MAX_ITEMS = 8;
+  const REC_MIN_ITEMS = 3;
+
+  function emptyInterest() {
+    return { terms: {}, cats: {}, tags: {}, clicked: [] };
+  }
+
+  function readInterest() {
+    const p = readKV(INTEREST_KEY, null);
+    if (p && typeof p === 'object' && p.terms && p.cats && p.tags && Array.isArray(p.clicked)) return p;
+    return emptyInterest();
+  }
+
+  function writeInterest(p) {
+    writeKV(INTEREST_KEY, p);
+  }
+
+  // 标题分词:ASCII 单词整词 + 中文连续段切 bigram,轻量无依赖
+  function titleTerms(title) {
+    const lower = String(title || '').toLowerCase();
+    const out = new Set();
+    (lower.match(/[a-z0-9][a-z0-9+#.\-]{1,}/g) || []).forEach((w) => out.add(w));
+    (lower.match(/[\u4e00-\u9fff]+/g) || []).forEach((run) => {
+      for (let i = 0; i + 1 < run.length; i += 1) out.add(run.substr(i, 2));
+    });
+    return Array.from(out);
+  }
+
+  function recordInterest(item) {
+    if (!getConfig().interestOn) return;
+    const p = readInterest();
+    titleTerms(item.title).forEach((t) => {
+      p.terms[t] = (p.terms[t] || 0) + 1;
+    });
+    if (item.category) p.cats[item.category] = (p.cats[item.category] || 0) + 1;
+    (item.tags || []).forEach((t) => {
+      p.tags[t] = (p.tags[t] || 0) + 1;
+    });
+    if (item.id && p.clicked.indexOf(item.id) < 0) {
+      p.clicked.push(item.id);
+      if (p.clicked.length > INTEREST_MAX_CLICKS) p.clicked.shift();
+    }
+    const keys = Object.keys(p.terms);
+    if (keys.length > INTEREST_MAX_TERMS) {
+      keys.sort((a, b) => p.terms[a] - p.terms[b]);
+      keys.slice(0, keys.length - INTEREST_MAX_TERMS).forEach((k) => delete p.terms[k]);
+    }
+    writeInterest(p);
+  }
+
+  // 兴趣打分:标题分词命中计分 + 分类/标签亲和;已读过的记 0 分(不再推荐)
+  function interestScore(item, profile) {
+    let score = 0;
+    titleTerms(item.title).forEach((t) => {
+      score += profile.terms[t] || 0;
+    });
+    score += 2 * (profile.cats[item.category] || 0);
+    (item.tags || []).forEach((t) => {
+      score += 2 * (profile.tags[t] || 0);
+    });
+    if (item.id && profile.clicked.indexOf(item.id) >= 0) return 0;
+    return score;
+  }
+
+  // 「为你推荐」:按兴趣分抽出最高分的未读帖子置顶成组,原分组同步移除
+  function applyRecommendation(merged, profile) {
+    if (!profile || !profile.clicked.length) return merged;
+    const scored = [];
+    merged.groups.forEach((g) =>
+      g.items.forEach((entry) => {
+        const s = interestScore(entry.item, profile);
+        if (s > 0) scored.push({ entry, s });
+      })
+    );
+    if (scored.length < REC_MIN_ITEMS) return merged;
+    scored.sort((a, b) => b.s - a.s);
+    const picks = new Set(scored.slice(0, REC_MAX_ITEMS).map((x) => x.entry.index));
+    const recEntries = scored.filter((x) => picks.has(x.entry.index)).map((x) => x.entry);
+    merged.groups = merged.groups
+      .map((g) => ({ tag: g.tag, items: g.items.filter((e) => !picks.has(e.index)) }))
+      .filter((g) => g.items.length);
+    merged.groups.unshift({ tag: REC_TAG, items: recEntries });
+    merged.recommended = recEntries.length;
+    return merged;
   }
 
   // 返回过滤排序后的 items;热点 id 记入 state.hotIds,渲染时红字突出
@@ -948,6 +1046,9 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     'color:var(--variant);font-size:13px;line-height:1;flex:0 0 auto;}',
     '.ldas-blk-chip__del:hover{background:#e03131;color:#fff;}',
     '.ldas-blocklists-row{align-items:start;}',
+    '.ldas-clear-row{display:flex;justify-content:flex-end;}',
+    '.ldas-clear-interest{height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--outline);color:var(--variant);font-size:11.5px;}',
+    '.ldas-clear-interest:hover{border-color:var(--primary);color:var(--primary);}',
     '.ldas-adv{border:1px solid var(--outline);border-radius:12px;padding:0 12px 10px;}',
     '.ldas-adv summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--variant);padding:10px 0;list-style:none;',
     'display:flex;align-items:center;gap:6px;user-select:none;}',
@@ -1099,6 +1200,11 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-autoload"> 条数不足时自动滚动加载</label>',
       '</div>',
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-overview"> 生成整体概览(多 1 次请求)</label>',
+      '<div class="ldas-cfg-row">',
+      '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-autorun"> 打开面板自动出结果(30 分钟内用缓存)</label>',
+      '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-interest"> 记录点击生成「为你推荐」</label>',
+      '</div>',
+      '<div class="ldas-clear-row"><button id="ldas-clear-interest" type="button" class="ldas-clear-interest">清空兴趣记录(仅存本地)</button></div>',
       '<div class="ldas-cfg-row ldas-blocklists-row">',
       blocklistHtml('blk-kw', '屏蔽标题关键字', '输入关键字,回车或点添加'),
       blocklistHtml('blk-users', '屏蔽用户', '输入用户名,回车或点添加'),
@@ -1150,6 +1256,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     cfg.limit = clampInt(cfg.limit, 10, MAX_LIMIT, DEFAULT_CONFIG.limit);
     cfg.autoLoad = !!cfg.autoLoad;
     cfg.includeOverview = !!cfg.includeOverview;
+    cfg.openAutoRun = !!cfg.openAutoRun;
+    cfg.interestOn = !!cfg.interestOn;
     // 旧单通道配置迁移为通道列表
     if (!Array.isArray(cfg.channels)) {
       cfg.channels = cfg.apiBase && cfg.apiKey
@@ -1237,6 +1345,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     // 后台打开:GM_openInTab active:false 不抢焦点;无油猴 API 时退回 window.open
     a.addEventListener('click', function (ev) {
       ev.preventDefault();
+      recordInterest(entry.item);
       if (typeof GM_openInTab === 'function') {
         GM_openInTab(a.href, { active: false, insert: true, setParent: true });
       } else {
@@ -1329,7 +1438,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       const chip = document.createElement('span');
       chip.className = 'ldas-chip';
       chip.style.setProperty('--h', String(tagHue(group.tag)));
-      chip.textContent = group.tag;
+      chip.textContent = group.tag === REC_TAG ? '★ ' + group.tag : group.tag;
       const count = document.createElement('span');
       count.className = 'ldas-group__count';
       count.textContent = group.items.length + ' 条';
@@ -1412,6 +1521,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       if (signal.aborted) throw new Error('已取消');
 
       const merged = mergeResults(items, results);
+      applyRecommendation(merged, readInterest());
       merged.overview = '';
       merged.overviewFailed = '';
       state.lastResult = merged;
@@ -1428,16 +1538,63 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       }
 
       renderResults(merged, items);
+      writeResultCache(merged, items);
       setStatus(
         merged.failed.length || merged.misses.length
           ? '完成(部分失败)'
-          : '完成 · ' + items.length + ' 条 · ' + merged.groups.length + ' 类' + loadNote
+          : '完成 · ' + items.length + ' 条 · ' + merged.groups.length + ' 类' +
+            (merged.recommended ? ' · 按兴趣推荐 ' + merged.recommended + ' 条' : '') + loadNote
       );
       return merged;
     } finally {
       state.running = false;
       setProgress(0, 0);
     }
+  }
+
+  /* 打开即见:结果缓存 + 自动总结 */
+  function readResultCache() {
+    const c = readKV(RESULT_KEY, null);
+    if (c && c.result && Array.isArray(c.items) && typeof c.ts === 'number' && typeof c.path === 'string') return c;
+    return null;
+  }
+
+  function writeResultCache(result, items) {
+    try {
+      writeKV(RESULT_KEY, {
+        path: location.pathname,
+        ts: Date.now(),
+        result,
+        items,
+        hotIds: Array.from(state.hotIds)
+      });
+    } catch (err) {
+      /* 缓存写失败不影响本次结果 */
+    }
+  }
+
+  function renderCached(cache) {
+    state.hotIds = new Set(cache.hotIds || []);
+    state.lastResult = cache.result;
+    state.lastItems = cache.items;
+    renderResults(cache.result, cache.items);
+    const mins = Math.max(1, Math.round((Date.now() - cache.ts) / 60000));
+    setStatus(mins + ' 分钟前的结果' + (Date.now() - cache.ts < CACHE_FRESH_MS ? '(新鲜,不再重跑)' : ',后台刷新中…'));
+  }
+
+  // 打开面板即出内容:同路径新鲜缓存直接展示;没有缓存或已过期则后台自动总结
+  function maybeAutoSummarize() {
+    const cfg = getConfig();
+    if (!cfg.openAutoRun || state.running) return;
+    if (!cfg.apiBase || !cfg.apiKey) return;
+    const cache = readResultCache();
+    if (cache && cache.path === location.pathname) {
+      renderCached(cache);
+      if (Date.now() - cache.ts < CACHE_FRESH_MS) return;
+    }
+    summarize().catch((err) => {
+      setStatus('自动总结失败:' + String((err && err.message) || err).slice(0, 120));
+    });
   }
 
   function open() {
@@ -1447,6 +1604,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     // 无可用通道时自动展开配置
     const hasChannel = collectChannels().some((c) => c.apiBase && c.apiKey);
     if (!hasChannel) el('ldas-cfg').classList.add('is-on');
+    maybeAutoSummarize();
   }
 
   function close() {
@@ -1698,6 +1856,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     cfg.limit = clampInt(el('cfg-limit').value, 10, MAX_LIMIT, DEFAULT_CONFIG.limit);
     cfg.autoLoad = el('cfg-autoload').checked;
     cfg.includeOverview = el('cfg-overview').checked;
+    cfg.openAutoRun = el('cfg-autorun').checked;
+    cfg.interestOn = el('cfg-interest').checked;
     cfg.blockKeywords = blocklistValues(el('blk-kw')).join(',');
     cfg.blockUsers = blocklistValues(el('blk-users')).join(',');
     cfg.welfareKeywords = blocklistValues(el('wlf-kw')).join(',');
@@ -1712,6 +1872,8 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     el('cfg-limit').value = String(cfg.limit);
     el('cfg-autoload').checked = cfg.autoLoad;
     el('cfg-overview').checked = cfg.includeOverview;
+    el('cfg-autorun').checked = cfg.openAutoRun;
+    el('cfg-interest').checked = cfg.interestOn;
     bindBlocklist('blk-kw', cfg.blockKeywords);
     bindBlocklist('blk-users', cfg.blockUsers);
     bindBlocklist('wlf-kw', cfg.welfareKeywords);
@@ -1722,6 +1884,10 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     const tagsEdit = el('ldas-tags-edit');
     effectiveTagAliases(cfg).forEach((g) => tagsEdit.appendChild(tagAliasRow(g)));
     on(el('ldas-add-tag'), 'click', () => tagsEdit.appendChild(tagAliasRow({ name: '', aliases: '' })));
+    on(el('ldas-clear-interest'), 'click', () => {
+      writeInterest(emptyInterest());
+      setStatus('已清空兴趣记录');
+    });
 
     // 通道列表:至少留一张空卡,保证首用户能直接填
     const wrap = el('ldas-channels');
@@ -2038,6 +2204,9 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     applyUserFilters,
     applyBoardProfile,
     buildTagAliasTable,
+    titleTerms,
+    interestScore,
+    applyRecommendation,
     planBatches,
     buildItemMessages,
     buildOverviewMessages,

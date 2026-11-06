@@ -73,6 +73,27 @@ setTimeout(() => {
     L.normalizeTag('foo') + '/' + L.normalizeTag('Bar'));
   check('自定义表下未命中仍走截断', L.normalizeTag('abcdefghijklmnop') === 'abcdefgh', L.normalizeTag('abcdefghijklmnop'));
   L.state.tagAliasTable = null;
+
+  // --- 兴趣推荐(分词/打分/置顶组) ---
+  const terms = L.titleTerms('DeepSeek 免费额度分享');
+  check('标题分词:ASCII 词 + 中文 bigram', terms.indexOf('deepseek') >= 0 && terms.indexOf('免费') >= 0 && terms.indexOf('分享') >= 0, JSON.stringify(terms));
+  check('兴趣打分:命中词计分', L.interestScore({ title: '免费送额度', category: '', tags: [] }, { terms: { 免费: 3, 额度: 2 }, cats: {}, tags: {}, clicked: [] }) > 0);
+  check('已读帖子打 0 分', L.interestScore({ id: '9', title: '免费送额度', category: '', tags: [] }, { terms: { 免费: 3 }, cats: {}, tags: {}, clicked: ['9'] }) === 0);
+  const mkE = (id, title, tag) => ({ item: { id: id, title: title, category: '', tags: [], time: null, stats: '', url: '', author: '' }, index: Number(id), summary: 's', tag: tag });
+  const profT = { terms: { 免费: 3, 额度: 2 }, cats: {}, tags: {}, clicked: ['8'] };
+  const mergedT = { groups: [
+    { tag: '技术', items: [mkE('1', '免费送额度活动', '技术'), mkE('2', '额度免费领', '技术')] },
+    { tag: '闲聊', items: [mkE('3', '免费福利白嫖', '闲聊'), mkE('4', '完全无关的帖子', '闲聊')] }
+  ] };
+  const recT = L.applyRecommendation(mergedT, profT);
+  check('为你推荐:高分未读置顶成组', recT.groups[0].tag === '为你推荐' && recT.groups[0].items.length === 3,
+    JSON.stringify(recT.groups.map((g) => g.tag + ':' + g.items.length)));
+  check('推荐后原组移除已推荐条目', recT.groups.length === 2 && recT.groups[1].tag === '闲聊' && recT.groups[1].items.length === 1,
+    JSON.stringify(recT.groups.map((g) => g.tag)));
+  check('无点击记录不生成推荐组', L.applyRecommendation(
+    { groups: [{ tag: '技术', items: [mkE('1', '免费送额度活动', '技术')] }] },
+    { terms: { 免费: 3 }, cats: {}, tags: {}, clicked: [] }
+  ).groups[0].tag === '技术');
   dom1.window.close();
 
   // --- 开发调优 ---

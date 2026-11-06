@@ -117,6 +117,30 @@ const L = w.__LDAS__;
   check('保存后顶部快捷入口即时重建', w.document.querySelectorAll('#ldas-cats .ldas-cat').length === 11,
     'got ' + w.document.querySelectorAll('#ldas-cats .ldas-cat').length);
 
+  // 7. 打开即见:结果缓存 + 点击记录兴趣画像(端到端)
+  {
+    const cfgRun = L.getConfig();
+    cfgRun.autoLoad = false;
+    cfgRun.includeOverview = false;
+    L.saveConfig(cfgRun);
+    w.fetch = () => Promise.resolve({ status: 200, text: () => Promise.resolve(JSON.stringify({
+      choices: [{ message: { content: '{"items":[{"i":1,"tag":"技术","summary":"端到端测试摘要"}]}' } }]
+    })) });
+    const out = await L.run();
+    check('自动总结跑通并返回分组', !!(out && out.groups && out.groups.length >= 1),
+      JSON.stringify(out && out.groups && out.groups.map((g) => g.tag)));
+    const rc = w.__store['ldas.result.cache.v1'];
+    check('总结结果写入缓存', !!(rc && rc.result && Array.isArray(rc.items) && rc.path === '/latest'), JSON.stringify(rc && rc.path));
+    w.open = () => null;
+    const card = w.document.querySelector('.ldas-card');
+    check('结果卡片已渲染', !!card);
+    if (card) card.click();
+    const prof = w.__store['ldas.interest.v1'];
+    check('点击卡片记录兴趣画像', !!(prof && prof.terms && Object.keys(prof.terms).length > 0),
+      JSON.stringify(prof && Object.keys(prof.terms || {}).slice(0, 6)));
+    check('已读帖子 id 进入 clicked', !!(prof && prof.clicked && prof.clicked.indexOf('1') >= 0), JSON.stringify(prof && prof.clicked));
+  }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('FATAL', e); process.exit(1); });
