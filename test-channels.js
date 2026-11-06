@@ -67,6 +67,31 @@ const L = w.__LDAS__;
   catch (e) { threw = true; }
   check('全部通道失败时抛错', threw);
 
+  // 5. 屏蔽列表 chip 编辑器(标题关键字 / 屏蔽用户)
+  const kwRoot = w.document.getElementById('blk-kw');
+  const kwInput = kwRoot.querySelector('.ldas-blocklist__input-row input');
+  check('屏蔽关键字初始无 chip', kwRoot.querySelectorAll('.ldas-blk-chip').length === 0);
+  kwInput.value = '广告， 抽奖、转发';
+  kwRoot.querySelector('.ldas-blocklist__add').click();
+  check('添加:多分隔符一次拆多条', kwRoot.querySelectorAll('.ldas-blk-chip').length === 3,
+    JSON.stringify(Array.from(kwRoot.querySelectorAll('.ldas-blk-chip__text')).map((n) => n.textContent)));
+  check('添加后输入框清空', kwInput.value === '', JSON.stringify(kwInput.value));
+  kwInput.value = '广告';
+  kwRoot.querySelector('.ldas-blocklist__add').click();
+  check('重复条目不重复添加', kwRoot.querySelectorAll('.ldas-blk-chip').length === 3);
+  kwInput.value = '夜话';
+  kwInput.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  check('回车即添加', kwRoot.querySelectorAll('.ldas-blk-chip').length === 4);
+  kwRoot.querySelector('.ldas-blk-chip__del').click();
+  check('点 × 删除一条', kwRoot.querySelectorAll('.ldas-blk-chip').length === 3);
+  const uRoot = w.document.getElementById('blk-users');
+  uRoot.querySelector('.ldas-blocklist__input-row input').value = 'someone';
+  uRoot.querySelector('.ldas-blocklist__add').click();
+  w.document.getElementById('ldas-save').click();
+  const savedCfg = L.getConfig();
+  check('保存后 blockKeywords 持久化', savedCfg.blockKeywords === '抽奖,转发,夜话', JSON.stringify(savedCfg.blockKeywords));
+  check('保存后 blockUsers 持久化', savedCfg.blockUsers === 'someone', JSON.stringify(savedCfg.blockUsers));
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('FATAL', e); process.exit(1); });

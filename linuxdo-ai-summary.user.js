@@ -2,7 +2,7 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.6.0
+// @version      1.6.1
 // @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
@@ -23,7 +23,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.6.0';
+  const VERSION = '1.6.1';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -888,11 +888,30 @@
     '#ldas-add-ch{align-self:flex-start;height:32px;padding:0 14px;border-radius:16px;border:1px dashed var(--outline);color:var(--variant);font-size:12.5px;}',
     '#ldas-add-ch:hover{border-color:var(--primary);color:var(--primary);}',
     '#ldas-ch-note{margin:0;font-size:11.5px;color:var(--variant);}',
+    '.ldas-blocklist{display:flex;flex-direction:column;gap:6px;min-width:0;}',
+    '.ldas-blocklist__label{font-size:12px;color:var(--variant);}',
+    '.ldas-blocklist__input-row{display:flex;gap:6px;}',
+    '.ldas-blocklist__input-row input{flex:1;min-width:0;padding:8px 12px;border-radius:10px;',
+    'border:1px solid var(--outline);background:var(--surface-c);color:var(--on-surface);font-size:13px;outline:none;font-family:inherit;}',
+    '.ldas-blocklist__input-row input:focus{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-container);}',
+    '.ldas-blocklist__add{flex:0 0 auto;height:34px;padding:0 14px;border-radius:17px;background:var(--primary-container);',
+    'color:var(--on-primary-container);font-size:12.5px;font-weight:600;}',
+    '.ldas-blocklist__add:hover{filter:brightness(1.06);}',
+    '.ldas-blocklist__chips{display:flex;flex-wrap:wrap;gap:6px;}',
+    '.ldas-blocklist__chips:empty{display:none;}',
+    '.ldas-blk-chip{display:inline-flex;align-items:center;gap:2px;height:26px;padding:0 4px 0 10px;border-radius:13px;',
+    'background:var(--surface-ch);color:var(--on-surface);font-size:12px;max-width:100%;}',
+    '.ldas-blk-chip__text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+    '.ldas-blk-chip__del{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;',
+    'color:var(--variant);font-size:13px;line-height:1;flex:0 0 auto;}',
+    '.ldas-blk-chip__del:hover{background:#e03131;color:#fff;}',
+    '.ldas-blocklists-row{align-items:start;}',
     '.ldas-cfg-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;}',
-    '.ldas-cfg-actions-row{align-items:center;position:sticky;bottom:0;background:var(--surface);padding:8px 0;margin:0 -6px 0 0;}',
-    '#ldas-save{height:38px;padding:0 22px;border-radius:19px;background:var(--primary);color:var(--on-primary);font-size:13.5px;font-weight:600;justify-self:start;}',
+    '.ldas-cfg-actions-row{display:flex;align-items:center;gap:10px;position:sticky;bottom:0;background:var(--surface);padding:8px 0;margin:0 -6px 0 0;}',
+    '#ldas-save{height:38px;padding:0 22px;border-radius:19px;background:var(--primary);color:var(--on-primary);font-size:13.5px;font-weight:600;flex:0 0 auto;}',
     '#ldas-save:hover{filter:brightness(1.08);}',
-    '#ldas-save-status{font-size:12px;color:var(--variant);}',
+    '#ldas-save-status{font-size:12px;color:var(--variant);flex:1;min-width:0;}',
+    '.ldas-save-reminder{font-size:11.5px;color:var(--variant);flex:0 0 auto;}',
     '.ldas-field{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:12px;color:var(--variant);}',
     '.ldas-field.is-wide{width:100%;}',
     '.ldas-field input[type=text],.ldas-field input[type=password],.ldas-field input[type=number]{width:100%;padding:10px 12px;border-radius:12px;',
@@ -975,6 +994,20 @@
     );
   }
 
+  // 屏蔽列表编辑器:输入 + 添加按钮,已添加条目以可删除 chip 展示在输入框下方
+  function blocklistHtml(id, label, placeholder) {
+    return (
+      '<div class="ldas-blocklist" id="' + id + '">' +
+      '<span class="ldas-blocklist__label">' + label + '</span>' +
+      '<div class="ldas-blocklist__input-row">' +
+      '<input type="text" placeholder="' + placeholder + '">' +
+      '<button type="button" class="ldas-blocklist__add">添加</button>' +
+      '</div>' +
+      '<div class="ldas-blocklist__chips"></div>' +
+      '</div>'
+    );
+  }
+
   function buildPanel() {
     const root = document.createElement('div');
     root.id = 'ldas-root';
@@ -1005,12 +1038,13 @@
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-autoload"> 条数不足时自动滚动加载</label>',
       '</div>',
       '<label class="ldas-field ldas-check"><input type="checkbox" id="cfg-overview"> 生成整体概览(多 1 次请求)</label>',
-      '<div class="ldas-cfg-row">',
-      fieldHtml('cfg-block-kw', 'text', '屏蔽标题关键字', '标题含关键字即排除,逗号分隔', false),
-      fieldHtml('cfg-block-users', 'text', '屏蔽用户', '作者命中即排除,逗号分隔', false),
+      '<div class="ldas-cfg-row ldas-blocklists-row">',
+      blocklistHtml('blk-kw', '屏蔽标题关键字', '输入关键字,回车或点添加'),
+      blocklistHtml('blk-users', '屏蔽用户', '输入用户名,回车或点添加'),
       '</div>',
       '<div class="ldas-cfg-row ldas-cfg-actions-row">',
       '<button id="ldas-save" type="button">保存配置</button>',
+      '<span class="ldas-save-reminder">屏蔽项增删后点「保存配置」生效</span>',
       '<span id="ldas-save-status"></span>',
       '</div>',
       '<p id="ldas-hint">单批最多 40 条 / 9000 字符,失败批次不影响已成功结果。屏蔽规则只过滤总结,不改动论坛页面。点击卡片在新标签打开原帖。</p>',
@@ -1433,6 +1467,58 @@
     });
   }
 
+  // 读取屏蔽列表当前全部条目(chip 顺序即存储顺序)
+  function blocklistValues(root) {
+    return Array.prototype.map.call(root.querySelectorAll('.ldas-blk-chip__text'), (n) => n.textContent);
+  }
+
+  function renderBlocklistChips(root, values) {
+    const box = root.querySelector('.ldas-blocklist__chips');
+    box.textContent = '';
+    values.forEach((value) => {
+      const chip = document.createElement('span');
+      chip.className = 'ldas-blk-chip';
+      const text = document.createElement('span');
+      text.className = 'ldas-blk-chip__text';
+      text.textContent = value;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'ldas-blk-chip__del';
+      del.title = '删除 ' + value;
+      del.textContent = '×';
+      del.addEventListener('click', () => chip.remove());
+      chip.appendChild(text);
+      chip.appendChild(del);
+      box.appendChild(chip);
+    });
+  }
+
+  // 添加:输入框支持一次粘贴多条(逗号/顿号/分号分隔),重复条目自动忽略
+  function blocklistAdd(root) {
+    const input = root.querySelector('.ldas-blocklist__input-row input');
+    const parts = splitList(input.value);
+    if (!parts.length) return;
+    const current = blocklistValues(root);
+    parts.forEach((p) => {
+      if (current.indexOf(p) < 0) current.push(p);
+    });
+    renderBlocklistChips(root, current);
+    input.value = '';
+    input.focus();
+  }
+
+  function bindBlocklist(rootId, initial) {
+    const root = el(rootId);
+    renderBlocklistChips(root, splitList(initial));
+    on(root.querySelector('.ldas-blocklist__add'), 'click', () => blocklistAdd(root));
+    on(root.querySelector('.ldas-blocklist__input-row input'), 'keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        blocklistAdd(root);
+      }
+    });
+  }
+
   // 从 UI 收集完整配置:显式保存与「未点保存直接跑」共用同一入口,两条路径字段不会漂移
   function collectUIConfig() {
     const filled = collectChannels().filter((c) => c.apiBase && c.apiKey);
@@ -1444,8 +1530,8 @@
     cfg.limit = clampInt(el('cfg-limit').value, 10, MAX_LIMIT, DEFAULT_CONFIG.limit);
     cfg.autoLoad = el('cfg-autoload').checked;
     cfg.includeOverview = el('cfg-overview').checked;
-    cfg.blockKeywords = cleanText(el('cfg-block-kw').value);
-    cfg.blockUsers = cleanText(el('cfg-block-users').value);
+    cfg.blockKeywords = blocklistValues(el('blk-kw')).join(',');
+    cfg.blockUsers = blocklistValues(el('blk-users')).join(',');
     return cfg;
   }
 
@@ -1454,8 +1540,8 @@
     el('cfg-limit').value = String(cfg.limit);
     el('cfg-autoload').checked = cfg.autoLoad;
     el('cfg-overview').checked = cfg.includeOverview;
-    el('cfg-block-kw').value = cfg.blockKeywords || '';
-    el('cfg-block-users').value = cfg.blockUsers || '';
+    bindBlocklist('blk-kw', cfg.blockKeywords);
+    bindBlocklist('blk-users', cfg.blockUsers);
 
     // 通道列表:至少留一张空卡,保证首用户能直接填
     const wrap = el('ldas-channels');
