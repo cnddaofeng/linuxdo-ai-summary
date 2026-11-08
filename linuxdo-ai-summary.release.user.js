@@ -2,8 +2,8 @@
 // @name         LINUX DO 新帖列表 AI 智能总结
 // @name:en      Discourse Topic List AI Summary
 // @namespace    https://github.com/linuxdo-ai-summary
-// @version      1.8.0
-// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户;分类入口/福利关键字/标签分组可自定义;打开面板自动出结果,按兴趣生成「为你推荐」
+// @version      1.9.0
+// @description  一键抓取列表页帖子(标题/作者/时间/分类/回复数),AI 按主题分类 + 一句话摘要 + 整体概览,卡片点击直达原帖;支持任意 OpenAI 兼容接口;集成发帖时间列(可点击排序);选中 Base64 文本自动解码弹层;可自定义屏蔽标题关键字与用户;分类入口/福利关键字/标签分组可自定义;打开面板自动出结果,按兴趣生成「为你推荐」;特殊链接醒目入口
 // @author       linux.do.饕餮
 // @match        https://linux.do/*
 // @match        https://*.linux.do/*
@@ -41,7 +41,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   'use strict';
   if (!LDAS_RUN_OK) return;
 
-  const VERSION = '1.8.0';
+  const VERSION = '1.9.0';
   const MAX_LIMIT = 500;
   const BATCH_MAX_ITEMS = 40;
   const BATCH_MAX_CHARS = 9000;
@@ -65,6 +65,12 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     { label: 'NSFW', path: '/tag/nsfw/248' },
     { label: '软件开发', path: '/tag/1451-tag/1451' },
     { label: 'DeepSeek', path: '/tag/deepseek/252' }
+  ];
+
+  const SPECIAL_CATEGORIES = [
+    { label: '人工智能', path: '/tag/444-tag/444' },
+    { label: '软件开发', path: '/tag/1451-tag/1451' },
+    { label: '开源推广', path: '/tag/2234-tag/2234' }
   ];
 
   const DEFAULT_CONFIG = {
@@ -964,6 +970,14 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     '.ldas-icon-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--variant);}',
     '.ldas-icon-btn:hover{background:var(--surface-ch);color:var(--on-surface);}',
     '.ldas-icon-btn:disabled{opacity:.4;cursor:not-allowed;}',
+    '#ldas-cats-special{display:flex;gap:8px;overflow-x:auto;padding:8px 14px 2px;flex:0 0 auto;scrollbar-width:thin;}',
+    '.ldas-cat--special{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;border-radius:17px;',
+    'border:2px solid var(--primary);background:var(--primary-container);color:var(--on-primary-container);',
+    'font-size:13px;font-weight:700;white-space:nowrap;box-shadow:0 2px 10px rgba(0,100,150,.18);}',
+    '.ldas-cat--special svg{flex:0 0 auto;color:var(--primary);}',
+    '.ldas-cat--special:hover{filter:brightness(1.07);}',
+    '.ldas-cat--special.is-active{background:var(--primary);color:var(--on-primary);}',
+    '.ldas-cat--special.is-active svg{color:var(--on-primary);}',
     '#ldas-cats{display:flex;gap:6px;overflow-x:auto;padding:0 14px 8px;flex:0 0 auto;scrollbar-width:thin;}',
     '.ldas-cat{flex:0 0 auto;height:28px;padding:0 12px;border-radius:14px;border:1px solid var(--outline);',
     'background:var(--surface-c);color:var(--variant);font-size:12px;white-space:nowrap;}',
@@ -1143,6 +1157,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       '<button class="ldas-icon-btn" id="ldas-close" type="button" title="关闭">' + svg('close', 19) + '</button>',
       '</div>',
       '</div>',
+      '<div id="ldas-cats-special"></div>',
       '<div id="ldas-cats"></div>',
       '<div id="ldas-cfg">',
       '<div id="ldas-channels"></div>',
@@ -1163,12 +1178,17 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
       blocklistHtml('blk-users', '屏蔽用户', '输入用户名,回车或点添加'),
       '</div>',
       '<details class="ldas-adv">',
-      '<summary>板块与分类规则(福利关键字 / 分类入口 / 标签分组)</summary>',
+      '<summary>板块与分类规则(福利关键字 / 特殊链接 / 分类入口 / 标签分组)</summary>',
       '<div class="ldas-cfg-row ldas-blocklists-row">',
       blocklistHtml('wlf-kw', '福利白名单(命中必总结)', '输入关键字,回车或点添加'),
       blocklistHtml('wlf-bl', '福利黑名单(命中不总结)', '输入关键字,回车或点添加'),
       '</div>',
       '<p class="ldas-adv-note">白名单/黑名单仅在福利羊毛版块生效:命中白名单的帖子必进总结,未命中的跳过;黑名单命中的排除;白名单清空则该版块不过滤、全部总结。</p>',
+      '<div class="ldas-editor-col">',
+      '<span class="ldas-sec-label">特殊链接(面板最顶部醒目星标入口,名称 + 版块路径)</span>',
+      '<div id="ldas-specials-edit"></div>',
+      '<button id="ldas-add-special" type="button" class="ldas-add-row">+ 添加特殊链接</button>',
+      '</div>',
       '<div class="ldas-editor-col">',
       '<span class="ldas-sec-label">分类快捷入口(名称 + 版块路径,保存后顶部入口即时重建)</span>',
       '<div id="ldas-cats-edit"></div>',
@@ -1726,8 +1746,16 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   }
 
   function collectCategories() {
+    return collectCatRows('#ldas-cats-edit .ldas-row-edit');
+  }
+
+  function collectSpecialCategories() {
+    return collectCatRows('#ldas-specials-edit .ldas-row-edit');
+  }
+
+  function collectCatRows(selector) {
     return Array.prototype.map
-      .call(document.querySelectorAll('#ldas-cats-edit .ldas-row-edit'), (row) => {
+      .call(document.querySelectorAll(selector), (row) => {
         const read = (k) => {
           const input = row.querySelector('[data-cat-field=' + k + ']');
           return input ? cleanText(input.value) : '';
@@ -1779,6 +1807,10 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     return cfg && Array.isArray(cfg.categories) ? cfg.categories : QUICK_CATEGORIES;
   }
 
+  function effectiveSpecialCategories(cfg) {
+    return cfg && Array.isArray(cfg.specialCategories) ? cfg.specialCategories : SPECIAL_CATEGORIES;
+  }
+
   function effectiveTagAliases(cfg) {
     return cfg && Array.isArray(cfg.tagAliases)
       ? cfg.tagAliases
@@ -1802,6 +1834,7 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     cfg.welfareKeywords = blocklistValues(el('wlf-kw')).join(',');
     cfg.welfareBlacklist = blocklistValues(el('wlf-bl')).join(',');
     cfg.categories = collectCategories();
+    cfg.specialCategories = collectSpecialCategories();
     cfg.tagAliases = collectTagAliases();
     return cfg;
   }
@@ -1817,6 +1850,9 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     bindBlocklist('blk-users', cfg.blockUsers);
     bindBlocklist('wlf-kw', cfg.welfareKeywords);
     bindBlocklist('wlf-bl', cfg.welfareBlacklist);
+    const specialEdit = el('ldas-specials-edit');
+    effectiveSpecialCategories(cfg).forEach((cat) => specialEdit.appendChild(categoryRow(cat)));
+    on(el('ldas-add-special'), 'click', () => specialEdit.appendChild(categoryRow({ label: '', path: '' })));
     const catsEdit = el('ldas-cats-edit');
     effectiveCategories(cfg).forEach((cat) => catsEdit.appendChild(categoryRow(cat)));
     on(el('ldas-add-cat'), 'click', () => catsEdit.appendChild(categoryRow({ label: '', path: '' })));
@@ -1911,25 +1947,43 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
     );
   }
 
+  function bindCategoryChip(btn, cat, special) {
+    btn.title = special
+      ? '★ 特殊链接:跳到 ' + cat.label + ',落地后自动弹出面板并总结'
+      : '跳到 ' + cat.label + ' 版块,再点「总结」即总结该分类';
+    if (location.pathname === cat.path || location.pathname.indexOf(cat.path + '/') === 0) {
+      btn.classList.add('is-active');
+    }
+    on(btn, 'click', () => {
+      if (location.pathname === cat.path || location.pathname.indexOf(cat.path + '/') === 0) return;
+      writeKV(AUTOOPEN_KEY, 1);
+      routeTo(cat.path);
+      waitForCategory(cat.path);
+    });
+  }
+
   function buildCategoryChips() {
     const wrap = el('ldas-cats');
-    if (!wrap) return;
+    const specialWrap = el('ldas-cats-special');
+    if (!wrap || !specialWrap) return;
+    const cfg = getConfig();
     wrap.textContent = '';
-    effectiveCategories(getConfig()).forEach((cat) => {
+    specialWrap.textContent = '';
+    effectiveSpecialCategories(cfg).forEach((cat) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ldas-cat ldas-cat--special';
+      btn.innerHTML = svg('spark', 15) + '<span></span>';
+      btn.querySelector('span').textContent = cat.label;
+      bindCategoryChip(btn, cat, true);
+      specialWrap.appendChild(btn);
+    });
+    effectiveCategories(cfg).forEach((cat) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'ldas-cat';
       btn.textContent = cat.label;
-      btn.title = '跳到 ' + cat.label + ' 版块,再点「总结」即总结该分类';
-      if (location.pathname === cat.path || location.pathname.indexOf(cat.path + '/') === 0) {
-        btn.classList.add('is-active');
-      }
-      on(btn, 'click', () => {
-        if (location.pathname === cat.path || location.pathname.indexOf(cat.path + '/') === 0) return;
-        writeKV(AUTOOPEN_KEY, 1);
-        routeTo(cat.path);
-        waitForCategory(cat.path);
-      });
+      bindCategoryChip(btn, cat, false);
       wrap.appendChild(btn);
     });
   }
@@ -1968,13 +2022,17 @@ const LDAS_RUN_OK = LDAS_HOST_OK && ldasFnv1a(ldasSigText()) === LDAS_SIG_HASH;
   }
 
   function updateChipActive() {
-    const chips = document.querySelectorAll('#ldas-cats .ldas-cat');
-    const cats = effectiveCategories(getConfig());
-    Array.prototype.forEach.call(chips, (btn, i) => {
-      const cat = cats[i];
-      if (!cat) return;
-      const active = location.pathname === cat.path || location.pathname.indexOf(cat.path + '/') === 0;
-      btn.classList.toggle('is-active', active);
+    const cfg = getConfig();
+    [
+      ['#ldas-cats-special .ldas-cat', effectiveSpecialCategories(cfg)],
+      ['#ldas-cats .ldas-cat', effectiveCategories(cfg)]
+    ].forEach(([sel, cats]) => {
+      Array.prototype.forEach.call(document.querySelectorAll(sel), (btn, i) => {
+        const cat = cats[i];
+        if (!cat) return;
+        const active = location.pathname === cat.path || location.pathname.indexOf(cat.path + '/') === 0;
+        btn.classList.toggle('is-active', active);
+      });
     });
   }
 

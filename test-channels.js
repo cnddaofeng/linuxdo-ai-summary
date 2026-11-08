@@ -141,6 +141,27 @@ const L = w.__LDAS__;
     check('已读帖子 id 进入 clicked', !!(prof && prof.clicked && prof.clicked.indexOf('1') >= 0), JSON.stringify(prof && prof.clicked));
   }
 
+  // 8. 特殊链接醒目入口(默认 3 个星标按钮,置顶展示,编辑器增删,保存即时重建)
+  {
+    const spWrap = w.document.getElementById('ldas-cats-special');
+    check('特殊链接行位于普通分类行之前(置顶醒目)',
+      !!(spWrap.compareDocumentPosition(w.document.getElementById('ldas-cats')) & w.Node.DOCUMENT_POSITION_FOLLOWING));
+    const sp0 = w.document.querySelectorAll('#ldas-cats-special .ldas-cat--special');
+    check('特殊链接默认渲染 3 个', sp0.length === 3, 'got ' + sp0.length);
+    check('特殊链接含「开源推广」', Array.prototype.some.call(sp0, (b) => b.textContent.indexOf('开源推广') >= 0),
+      JSON.stringify(Array.prototype.map.call(sp0, (b) => b.textContent)));
+    w.document.getElementById('ldas-add-special').click();
+    const spRows = w.document.querySelectorAll('#ldas-specials-edit .ldas-row-edit');
+    spRows[3].querySelector('[data-cat-field=label]').value = '测试星标';
+    spRows[3].querySelector('[data-cat-field=path]').value = 'tag/test-tag';
+    w.document.getElementById('ldas-save').click();
+    const spCfg = L.getConfig();
+    check('保存后 specialCategories 持久化(路径自动补 /)', spCfg.specialCategories.length === 4 &&
+      spCfg.specialCategories[3].path === '/tag/test-tag', JSON.stringify(spCfg.specialCategories && spCfg.specialCategories[3]));
+    check('保存后醒目行即时重建为 4 个', w.document.querySelectorAll('#ldas-cats-special .ldas-cat--special').length === 4,
+      'got ' + w.document.querySelectorAll('#ldas-cats-special .ldas-cat--special').length);
+  }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('FATAL', e); process.exit(1); });
